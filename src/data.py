@@ -51,8 +51,8 @@ class MarketData:
                 df = self.api.get_bars(
                     symbol,
                     timeframe,
-                    start=start_date.isoformat(),
-                    end=end_date.isoformat(),
+                    start=start_date.strftime('%Y-%m-%d'),
+                    end=end_date.strftime('%Y-%m-%d'),
                     adjustment='raw'
                 ).df
                 
@@ -159,10 +159,28 @@ class MarketData:
             tuple: (market_open, market_close) datetime objects
         """
         try:
-            calendar = self.api.get_calendar(start=datetime.now().date().isoformat())
+            today = datetime.now().date()
+            calendar = self.api.get_calendar(start=today.isoformat())
+            logger.info(f"Calendar data: {calendar}")
+            
             if calendar:
-                return (calendar[0].open, calendar[0].close)
+                # Log the types and values
+                open_time = calendar[0].open
+                close_time = calendar[0].close
+                logger.info(f"Open time type: {type(open_time)}, value: {open_time}")
+                logger.info(f"Close time type: {type(close_time)}, value: {close_time}")
+                
+                # Convert time objects to datetime objects
+                open_datetime = datetime.combine(today, open_time)
+                close_datetime = datetime.combine(today, close_time)
+                
+                logger.info(f"Open datetime type: {type(open_datetime)}, value: {open_datetime}")
+                logger.info(f"Close datetime type: {type(close_datetime)}, value: {close_datetime}")
+                
+                return (open_datetime, close_datetime)
             return (None, None)
         except Exception as e:
+            import traceback
             logger.error(f"Error fetching market hours: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return (None, None)

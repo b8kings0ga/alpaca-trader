@@ -4,6 +4,9 @@ Trading strategies for the Alpaca Trading Bot.
 import pandas as pd
 import numpy as np
 import os.path
+import yfinance as yf
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
 from config import config
 from src.logger import get_logger
 from src.ml_models import get_ml_model, generate_ml_signals
@@ -295,6 +298,199 @@ class MLStrategy(Strategy):
             return {}
 
 
+class DualMovingAverageYF(Strategy):
+    """
+    Dual Moving Average strategy using yfinance data.
+    
+    Buy when short MA crosses above long MA.
+    Sell when short MA crosses below long MA.
+    
+    This strategy uses yfinance to fetch data instead of Alpaca API.
+    """
+    def __init__(self):
+        """
+        Initialize the Dual Moving Average strategy.
+        """
+        super().__init__("Dual Moving Average YF")
+        self.short_window = config.SHORT_WINDOW
+        self.long_window = config.LONG_WINDOW
+        
+    def fetch_data(self, symbols, period="1mo", interval="1d"):
+        """
+        Fetch data from yfinance.
+        
+        Args:
+            symbols (list): List of stock symbols
+            period (str): Period to fetch data for (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)
+            interval (str): Interval between data points (1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, 3mo)
+            
+        Returns:
+            dict: Dictionary of DataFrames with market data
+        """
+        data = {}
+        
+        for symbol in symbols:
+            try:
+                # Fetch data from yfinance
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(period=period, interval=interval)
+                
+                if df.empty:
+                    logger.warning(f"No data found for {symbol}")
+                    continue
+                
+                # Reset index to make Date a column
+                df = df.reset_index()
+                
+                # Rename columns to match Alpaca API format
+                df = df.rename(columns={
+                    'Date': 'timestamp',
+                    'Open': 'open',
+                    'High': 'high',
+                    'Low': 'low',
+                    'Close': 'close',
+                    'Volume': 'volume'
+                })
+                
+                # Add technical indicators
+                df['sma_short'] = df['close'].rolling(window=self.short_window).mean()
+                df['sma_long'] = df['close'].rolling(window=self.long_window).mean()
+                
+                # Calculate RSI
+                delta = df['close'].diff()
+                gain = delta.where(delta > 0, 0).rolling(window=config.RSI_PERIOD).mean()
+                loss = -delta.where(delta < 0, 0).rolling(window=config.RSI_PERIOD).mean()
+                
+                rs = gain / loss
+                df['rsi'] = 100 - (100 / (1 + rs))
+                
+                data[symbol] = df
+                
+                # Generate and save a plot of the dual moving averages
+                self._generate_plot(df, symbol)
+                
+            except Exception as e:
+                logger.error(f"Error fetching data for {symbol}: {e}")
+                
+        return data
+    
+    def _generate_plot(self, df, symbol):
+        """
+        Generate and save a plot of the dual moving averages.
+        
+        Args:
+            df (DataFrame): DataFrame with market data
+            symbol (str): Stock symbol
+        """
+        try:
+            # Create a figure and axis
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # Plot the closing price
+            ax.plot(df['timestamp'], df['close'], label='Close Price', alpha=0.5)
+            
+            # Plot the short and long moving averages
+            ax.plot(df['timestamp'], df['sma_short'], label=f'SMA {self.short_window}', linewidth=1.5)
+            ax.plot(df['timestamp'], df['sma_long'], label=f'SMA {self.long_window}', linewidth=1.5)
+            
+            # Add buy/sell signals
+            buy_signals = df[(df['sma_short'] > df['sma_long']) & (df['sma_short'].shift(1) <= df['sma_long'].shift(1))]
+            sell_signals = df[(df['sma_short'] < df['sma_long']) & (df['sma_short'].shift(1) >= df['sma_long'].shift(1))]
+            
+            ax.scatter(buy_signals['timestamp'], buy_signals['close'], marker='^', color='green', s=100, label='Buy Signal')
+            ax.scatter(sell_signals['timestamp'], sell_signals['close'], marker='v', color='red', s=100, label='Sell Signal')
+            
+            # Set title and labels
+            ax.set_title(f'{symbol} - Dual Moving Average Strategy')
+            ax.set_xlabel('Date')
+            ax.set_ylabel('Price')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            
+            # Save the figure
+            os.makedirs('logs/plots', exist_ok=True)
+            plt.savefig(f'logs/plots/{symbol}_dual_ma.png')
+            plt.close(fig)
+            
+            logger.info(f"Generated plot for {symbol}")
+            
+        except Exception as e:
+            logger.error(f"Error generating plot for {symbol}: {e}")
+    
+    def generate_signals(self, data=None):
+        """
+        Generate trading signals based on Dual Moving Average.
+        
+        Args:
+            data (dict, optional): Dictionary of DataFrames with market data.
+                                  If None, data will be fetched from yfinance.
+            
+        Returns:
+            dict: Dictionary of signals for each symbol
+        """
+        if data is None:
+            # Fetch data from yfinance
+            data = self.fetch_data(config.SYMBOLS)
+        
+        signals = {}
+        
+        for symbol, df in data.items():
+            if df.empty or len(df) < self.long_window:
+                logger.warning(f"Not enough data for {symbol} to generate signals")
+                continue
+                
+            # Create a copy of the DataFrame
+            df = df.copy()
+            
+            # Create signal column (1 = buy, -1 = sell, 0 = hold)
+            df['signal'] = 0
+            
+            # Generate signals
+            # Buy signal: short MA crosses above long MA
+            df.loc[df['sma_short'] > df['sma_long'], 'signal'] = 1
+            
+            # Sell signal: short MA crosses below long MA
+            df.loc[df['sma_short'] < df['sma_long'], 'signal'] = -1
+            
+            # Get the latest signal
+            latest_signal = df['signal'].iloc[-1]
+            
+            # Check for crossover (signal change)
+            signal_changed = False
+            if len(df) >= 2:
+                prev_signal = df['signal'].iloc[-2]
+                signal_changed = prev_signal != latest_signal and latest_signal != 0
+            
+            signals[symbol] = {
+                'action': self._get_action(latest_signal),
+                'signal': latest_signal,
+                'signal_changed': signal_changed,
+                'price': df['close'].iloc[-1],
+                'timestamp': df['timestamp'].iloc[-1],
+                'short_ma': df['sma_short'].iloc[-1],
+                'long_ma': df['sma_long'].iloc[-1]
+            }
+            
+        return signals
+    
+    def _get_action(self, signal):
+        """
+        Convert signal to action string.
+        
+        Args:
+            signal (int): Signal value (1, -1, or 0)
+            
+        Returns:
+            str: Action string ('buy', 'sell', or 'hold')
+        """
+        if signal == 1:
+            return 'buy'
+        elif signal == -1:
+            return 'sell'
+        else:
+            return 'hold'
+
+
 # Factory function to get strategy by name
 def get_strategy(strategy_name):
     """
@@ -309,14 +505,13 @@ def get_strategy(strategy_name):
     strategies = {
         'moving_average_crossover': MovingAverageCrossover,
         'rsi': RSIStrategy,
-        'ml': MLStrategy  # Added ML strategy placeholder
+        'ml': MLStrategy,  # Added ML strategy placeholder
+        'dual_ma_yf': DualMovingAverageYF  # Added Dual Moving Average with yfinance
     }
     
     strategy_class = strategies.get(strategy_name.lower())
     if not strategy_class:
         logger.error(f"Strategy '{strategy_name}' not found")
         return None
-        
-    return strategy_class()
         
     return strategy_class()

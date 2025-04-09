@@ -6,6 +6,7 @@ apscheduler>=3.8.0
 pytz>=2021.1
 loguru>=0.5.3
 matplotlib>=3.4.0
+yfinance>=0.2.0
 
 # ML-related packages (commented out by default, uncomment when implementing ML strategies)
 # scikit-learn>=1.0.0
