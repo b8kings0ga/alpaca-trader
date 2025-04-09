@@ -1,0 +1,39 @@
+FROM python:3.9-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    TZ=America/New_York \
+    PYTHONPATH=/app
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/logs /app/models
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy project files
+COPY . .
+
+# Expose the port Streamlit runs on
+EXPOSE 8501
+
+# Create entrypoint script
+RUN echo '#!/bin/sh\n\
+echo "Starting Alpaca Trading Bot Dashboard..."\n\
+cd /app && streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0\n\
+' > /app/dashboard_entrypoint.sh \
+    && chmod +x /app/dashboard_entrypoint.sh
+
+# Set entrypoint
+ENTRYPOINT ["/app/dashboard_entrypoint.sh"]

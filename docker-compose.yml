@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # Using yfinance as a fallback for Alpaca API data due to subscription limitations
   alpaca-trader:
     build:
       context: .
@@ -18,3 +19,26 @@ services:
       - TZ=America/New_York
     env_file:
       - .env
+
+  # Streamlit dashboard for visualizing trading data and performance
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: alpaca-dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./logs:/app/logs
+      - ./models:/app/models
+    environment:
+      - ALPACA_API_KEY=${ALPACA_API_KEY}
+      - ALPACA_API_SECRET=${ALPACA_API_SECRET}
+      - ALPACA_BASE_URL=${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
+      - ALPACA_DATA_URL=${ALPACA_DATA_URL:-https://data.alpaca.markets}
+      - TZ=America/New_York
+    env_file:
+      - .env
+    depends_on:
+      - alpaca-trader

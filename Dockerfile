@@ -28,7 +28,7 @@ COPY . .
 RUN chmod +x main.py
 
 # Add crontab file for more frequent trading (every 15 minutes during market hours)
-RUN echo "*/15 9-16 * * 1-5 cd /app && python main.py >> /app/logs/cron.log 2>&1" > /etc/cron.d/alpaca-trader \
+RUN echo "*/15 9-16 * * 1-5 cd /app && python main.py --use-yfinance >> /app/logs/cron.log 2>&1" > /etc/cron.d/alpaca-trader \
     && chmod 0644 /etc/cron.d/alpaca-trader \
     && crontab /etc/cron.d/alpaca-trader
 
@@ -37,7 +37,7 @@ RUN echo '#!/bin/sh\n\
 echo "Starting Alpaca Trading Bot..."\n\
 cron\n\
 echo "Running initial trading cycle..."\n\
-python main.py\n\
+python main.py --use-yfinance\n\
 echo "Bot is now scheduled to run every 15 minutes during market hours. Keeping container alive..."\n\
 tail -f /app/logs/alpaca_trader.log\n\
 ' > /app/entrypoint.sh \

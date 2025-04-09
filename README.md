@@ -1,3 +1,116 @@
+# Alpaca Trading Bot with Dashboard
+
+An algorithmic trading bot for Alpaca Markets with a Streamlit dashboard for monitoring and visualization.
+
+## Features
+
+- **Trading Bot**: Automated trading using various strategies
+  - Moving Average Crossover
+  - RSI Strategy
+  - Machine Learning Strategy (placeholder)
+  - Dual Moving Average with YFinance data
+- **Streamlit Dashboard**: Interactive web interface for monitoring and analysis
+  - Portfolio Overview
+  - Market Data & Signals
+  - Strategy Performance
+  - Trading History
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.9+
+- Docker and Docker Compose (optional)
+- Alpaca Markets API key and secret
+
+### Installation
+
+1. Clone the repository:
+   ```
+   git clone <repository-url>
+   cd alpaca-trader
+   ```
+
+2. Create a `.env` file with your Alpaca API credentials:
+   ```
+   ALPACA_API_KEY=your_api_key
+   ALPACA_API_SECRET=your_api_secret
+   ALPACA_BASE_URL=https://paper-api.alpaca.markets
+   ```
+
+3. Install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+
+### Running the Bot
+
+#### Using Python directly:
+
+```
+python main.py --strategy moving_average_crossover --use-yfinance
+```
+
+Available strategies:
+- `moving_average_crossover`
+- `rsi`
+- `ml`
+- `dual_ma_yf`
+
+#### Using Docker:
+
+```
+docker-compose up -d alpaca-trader
+```
+
+### Running the Dashboard
+
+#### Using Python directly:
+
+```
+streamlit run src/streamlit_app.py
+```
+
+#### Using Docker:
+
+```
+docker-compose up -d dashboard
+```
+
+The dashboard will be available at http://localhost:8501
+
+## Dashboard Features
+
+1. **Portfolio Overview**
+   - Account metrics (equity, cash, buying power)
+   - Current positions and performance
+   - Portfolio allocation visualization
+
+2. **Market Data & Signals**
+   - Price charts with technical indicators
+   - Current trading signals
+   - Volume analysis
+
+3. **Strategy Performance**
+   - Strategy description and parameters
+   - Performance metrics
+   - Backtest results visualization
+
+4. **Trading History**
+   - Recent trades table
+   - Cumulative profit/loss chart
+
+## Configuration
+
+Edit `config/config.py` to customize:
+- Trading symbols
+- Strategy parameters
+- Schedule settings
+- Notification settings
+
+## License
+
+[MIT License](LICENSE)
 # Alpaca Trader
 
 An automated trading bot built with Python and Alpaca SDK that runs in a Docker container.
@@ -7,6 +120,8 @@ An automated trading bot built with Python and Alpaca SDK that runs in a Docker 
 - Implements a simple trading strategy (Moving Average Crossover)
 - Connects to Alpaca's Paper Trading API
 - Automatically fetches market data and executes trades
+  - Primary: Alpaca API (requires appropriate subscription level)
+  - Fallback: Yahoo Finance API (via yfinance library)
 - Logs trades and portfolio status
 - Runs on a configurable schedule (every 15 minutes by default)
 - Containerized with Docker for easy deployment and fast builds
@@ -76,6 +191,24 @@ docker-compose up -d
 # View logs
 docker-compose logs -f
 ```
+
+#### Data Source Options
+
+The bot can use two different data sources:
+
+1. **Alpaca API** (default): Requires an appropriate subscription level that includes SIP data access
+2. **Yahoo Finance** (fallback): Free alternative using the yfinance library
+
+To use Yahoo Finance instead of Alpaca API (useful if you encounter "subscription does not permit querying recent SIP data" errors):
+
+```bash
+# When running directly
+python main.py --use-yfinance
+
+# Or set in the Dockerfile (already configured by default)
+```
+
+The Docker container is configured to use yfinance by default to avoid subscription issues.
 
 ## Configuration Options
 

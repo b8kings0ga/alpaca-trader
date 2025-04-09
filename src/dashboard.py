@@ -1,0 +1,689 @@
+"""
+Streamlit dashboard for the Alpaca Trading Bot.
+"""
+import os
+import pandas as pd
+import numpy as np
+import streamlit as st
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import datetime, timedelta
+import pytz
+from config import config
+from bot import AlpacaBot
+from data import MarketData
+from strategies import get_strategy
+from logger import get_logger
+
+logger = get_logger()
+
+class Dashboard:
+    """
+    Streamlit dashboard for the Alpaca Trading Bot.
+    """
+    def __init__(self):
+        """
+        Initialize the dashboard.
+        """
+        self.market_data = MarketData()
+        self.strategies = {
+            'moving_average_crossover': 'Moving Average Crossover',
+            'rsi': 'RSI Strategy',
+            'ml': 'ML Strategy',
+            'dual_ma_yf': 'Dual Moving Average (YFinance)'
+        }
+        self.current_strategy = None
+        self.data = {}
+        logger.info("Dashboard initialized")
+
+    def run(self):
+        """
+        Run the Streamlit dashboard.
+        """
+        st.set_page_config(
+            page_title="Alpaca Trading Bot Dashboard",
+            page_icon="📈",
+            layout="wide",
+            initial_sidebar_state="expanded"
+        )
+
+        # Sidebar
+        self._build_sidebar()
+
+        # Main content
+        st.title("Alpaca Trading Bot Dashboard")
+        
+        # Display market status
+        self._display_market_status()
+        
+        # Create tabs for different sections
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Portfolio Overview", 
+            "Market Data & Signals", 
+            "Strategy Performance", 
+            "Trading History"
+        ])
+        
+        with tab1:
+            self._build_portfolio_tab()
+            
+        with tab2:
+            self._build_market_data_tab()
+            
+        with tab3:
+            self._build_strategy_tab()
+            
+        with tab4:
+            self._build_trading_history_tab()
+
+    def _build_sidebar(self):
+        """
+        Build the sidebar with controls and settings.
+        """
+        st.sidebar.title("Controls")
+        
+        # Strategy selection
+        selected_strategy = st.sidebar.selectbox(
+            "Select Strategy",
+            list(self.strategies.keys()),
+            format_func=lambda x: self.strategies[x]
+        )
+        
+        if selected_strategy != self.current_strategy:
+            self.current_strategy = selected_strategy
+            self.strategy = get_strategy(selected_strategy)
+            st.sidebar.success(f"Strategy changed to {self.strategies[selected_strategy]}")
+        
+        # Symbol selection
+        selected_symbols = st.sidebar.multiselect(
+            "Select Symbols",
+            config.SYMBOLS,
+            default=config.SYMBOLS[:3]
+        )
+        
+        # Timeframe selection
+        timeframe = st.sidebar.selectbox(
+            "Timeframe",
+            ["1D", "1H", "15Min"],
+            index=0
+        )
+        
+        # Data period selection
+        data_period = st.sidebar.slider(
+            "Data Period (days)",
+            min_value=7,
+            max_value=100,
+            value=30,
+            step=1
+        )
+        
+        # Fetch data button
+        if st.sidebar.button("Fetch Data"):
+            with st.sidebar:
+                with st.spinner("Fetching data..."):
+                    if hasattr(self.strategy, 'fetch_data') and callable(getattr(self.strategy, 'fetch_data')):
+                        self.data = self.strategy.fetch_data(selected_symbols)
+                        st.success(f"Data fetched for {len(self.data)} symbols using YFinance")
+                    else:
+                        self.data = self.market_data.get_bars(selected_symbols, timeframe, data_period)
+                        st.success(f"Data fetched for {len(self.data)} symbols using Alpaca API")
+        
+        # Account refresh button
+        if st.sidebar.button("Refresh Account Data"):
+            with st.sidebar:
+                with st.spinner("Refreshing account data..."):
+                    self.account_info = self.market_data.get_account()
+                    self.positions = self.market_data.get_positions()
+                    st.success("Account data refreshed")
+        
+        # Display bot status
+        st.sidebar.subheader("Bot Status")
+        is_market_open = self.market_data.is_market_open()
+        st.sidebar.metric(
+            "Market Status",
+            "Open" if is_market_open else "Closed",
+            delta=None
+        )
+        
+        # Display API connection status
+        try:
+            account = self.market_data.get_account()
+            api_status = "Connected" if account else "Error"
+        except:
+            api_status = "Error"
+            
+        st.sidebar.metric(
+            "API Connection",
+            api_status,
+            delta=None
+        )
+        
+        # Display environment info
+        st.sidebar.subheader("Environment")
+        st.sidebar.info(
+            f"API Mode: {'Paper' if 'paper' in config.ALPACA_BASE_URL else 'Live'}\n"
+            f"Timezone: {config.TIMEZONE}\n"
+            f"Run Frequency: Every {config.RUN_INTERVAL} {config.RUN_FREQUENCY}"
+        )
+
+    def _display_market_status(self):
+        """
+        Display market status information.
+        """
+        # Create three columns
+        col1, col2, col3 = st.columns(3)
+        
+        # Market status
+        is_market_open = self.market_data.is_market_open()
+        col1.metric(
+            "Market Status",
+            "Open" if is_market_open else "Closed"
+        )
+        
+        # Market hours
+        try:
+            market_hours = self.market_data.get_market_hours()
+            if market_hours[0]:
+                open_time = market_hours[0].strftime("%H:%M:%S")
+                close_time = market_hours[1].strftime("%H:%M:%S")
+                col2.metric("Market Hours", f"{open_time} - {close_time}")
+            else:
+                col2.metric("Market Hours", "Unknown")
+        except:
+            col2.metric("Market Hours", "Error fetching")
+        
+        # Current time
+        now = datetime.now(pytz.timezone(config.TIMEZONE))
+        col3.metric("Current Time", now.strftime("%Y-%m-%d %H:%M:%S"))
+        
+    def _build_portfolio_tab(self):
+        """
+        Build the portfolio overview tab.
+        """
+        st.header("Portfolio Overview")
+        
+        try:
+            # Fetch account data
+            account_info = self.market_data.get_account()
+            positions = self.market_data.get_positions()
+            
+            if not account_info:
+                st.warning("Could not fetch account information. Please check your API connection.")
+                return
+                
+            # Account metrics
+            col1, col2, col3, col4 = st.columns(4)
+            
+            col1.metric(
+                "Portfolio Value",
+                f"${float(account_info.get('portfolio_value', 0)):.2f}"
+            )
+            
+            col2.metric(
+                "Cash",
+                f"${float(account_info.get('cash', 0)):.2f}"
+            )
+            
+            col3.metric(
+                "Buying Power",
+                f"${float(account_info.get('buying_power', 0)):.2f}"
+            )
+            
+            # Calculate daily P&L if we had previous data
+            # This is a placeholder - in a real implementation, you would track this over time
+            daily_pl = 0
+            col4.metric(
+                "Daily P&L",
+                f"${daily_pl:.2f}",
+                delta=f"{daily_pl:.2f}"
+            )
+            
+            # Positions table
+            st.subheader(f"Current Positions ({len(positions)})")
+            
+            if positions:
+                # Create a DataFrame for positions
+                positions_df = pd.DataFrame(positions)
+                
+                # Calculate additional metrics
+                positions_df['current_value'] = positions_df['qty'] * positions_df['current_price']
+                positions_df['cost_basis'] = positions_df['qty'] * positions_df['avg_entry_price']
+                positions_df['profit_loss'] = positions_df['current_value'] - positions_df['cost_basis']
+                positions_df['profit_loss_pct'] = (positions_df['profit_loss'] / positions_df['cost_basis']) * 100
+                
+                # Format the DataFrame for display
+                display_df = positions_df[['symbol', 'qty', 'avg_entry_price', 'current_price',
+                                          'market_value', 'unrealized_pl', 'profit_loss_pct']]
+                display_df = display_df.rename(columns={
+                    'symbol': 'Symbol',
+                    'qty': 'Quantity',
+                    'avg_entry_price': 'Entry Price',
+                    'current_price': 'Current Price',
+                    'market_value': 'Market Value',
+                    'unrealized_pl': 'Unrealized P&L',
+                    'profit_loss_pct': 'P&L %'
+                })
+                
+                # Format numeric columns
+                for col in ['Entry Price', 'Current Price', 'Market Value', 'Unrealized P&L']:
+                    display_df[col] = display_df[col].map('${:,.2f}'.format)
+                    
+                display_df['P&L %'] = display_df['P&L %'].map('{:,.2f}%'.format)
+                
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Portfolio allocation pie chart
+                st.subheader("Portfolio Allocation")
+                
+                fig = px.pie(
+                    positions_df,
+                    values='market_value',
+                    names='symbol',
+                    title='Portfolio Allocation by Symbol',
+                    hole=0.4
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+            else:
+                st.info("No positions currently held.")
+                
+        except Exception as e:
+            st.error(f"Error building portfolio tab: {e}")
+            
+    def _build_market_data_tab(self):
+        """
+        Build the market data and signals tab.
+        """
+        st.header("Market Data & Signals")
+        
+        if not self.data:
+            st.info("No data available. Please fetch data using the sidebar controls.")
+            return
+            
+        # Symbol selection for charts
+        symbols = list(self.data.keys())
+        if not symbols:
+            st.warning("No data available for any symbols.")
+            return
+            
+        selected_symbol = st.selectbox("Select Symbol", symbols)
+        
+        if selected_symbol not in self.data:
+            st.warning(f"No data available for {selected_symbol}.")
+            return
+            
+        df = self.data[selected_symbol]
+        
+        # Generate signals for the selected symbol
+        signals = {}
+        try:
+            signals = self.strategy.generate_signals({selected_symbol: df})
+        except Exception as e:
+            st.error(f"Error generating signals: {e}")
+        
+        # Display current signal
+        if selected_symbol in signals:
+            signal_data = signals[selected_symbol]
+            
+            cols = st.columns(4)
+            
+            # Action (buy/sell/hold)
+            action = signal_data.get('action', 'unknown')
+            action_color = {
+                'buy': 'green',
+                'sell': 'red',
+                'hold': 'blue'
+            }.get(action, 'gray')
+            
+            cols[0].markdown(f"**Current Signal:** <span style='color:{action_color};font-weight:bold;font-size:1.2em;'>{action.upper()}</span>", unsafe_allow_html=True)
+            
+            # Price
+            price = signal_data.get('price', 0)
+            cols[1].metric("Current Price", f"${price:.2f}")
+            
+            # Signal changed
+            signal_changed = signal_data.get('signal_changed', False)
+            cols[2].metric("Signal Changed", "Yes" if signal_changed else "No")
+            
+            # Timestamp
+            timestamp = signal_data.get('timestamp', None)
+            if timestamp:
+                if isinstance(timestamp, pd.Timestamp):
+                    timestamp = timestamp.to_pydatetime()
+                cols[3].metric("Signal Time", timestamp.strftime("%Y-%m-%d %H:%M"))
+        
+        # Price chart with indicators
+        st.subheader(f"{selected_symbol} Price Chart with Indicators")
+        
+        # Create figure with secondary y-axis
+        fig = go.Figure()
+        
+        # Add price candlestick chart
+        fig.add_trace(
+            go.Candlestick(
+                x=df['timestamp'],
+                open=df['open'],
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                name="Price"
+            )
+        )
+        
+        # Add moving averages if available
+        if 'sma_short' in df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=df['timestamp'],
+                    y=df['sma_short'],
+                    name=f"SMA {config.SHORT_WINDOW}",
+                    line=dict(color='blue', width=1)
+                )
+            )
+            
+        if 'sma_long' in df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=df['timestamp'],
+                    y=df['sma_long'],
+                    name=f"SMA {config.LONG_WINDOW}",
+                    line=dict(color='orange', width=1)
+                )
+            )
+        
+        # Add RSI on secondary y-axis if available
+        if 'rsi' in df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=df['timestamp'],
+                    y=df['rsi'],
+                    name="RSI",
+                    line=dict(color='purple', width=1),
+                    yaxis="y2"
+                )
+            )
+            
+            # Add RSI overbought/oversold lines
+            fig.add_trace(
+                go.Scatter(
+                    x=df['timestamp'],
+                    y=[config.RSI_OVERBOUGHT] * len(df),
+                    name="Overbought",
+                    line=dict(color='red', width=1, dash='dash'),
+                    yaxis="y2"
+                )
+            )
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=df['timestamp'],
+                    y=[config.RSI_OVERSOLD] * len(df),
+                    name="Oversold",
+                    line=dict(color='green', width=1, dash='dash'),
+                    yaxis="y2"
+                )
+            )
+        
+        # Update layout with secondary y-axis
+        fig.update_layout(
+            title=f"{selected_symbol} Price and Indicators",
+            xaxis_title="Date",
+            yaxis_title="Price",
+            yaxis2=dict(
+                title="RSI",
+                overlaying="y",
+                side="right",
+                range=[0, 100]
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Volume chart
+        st.subheader(f"{selected_symbol} Volume")
+        
+        volume_fig = px.bar(
+            df,
+            x='timestamp',
+            y='volume',
+            title=f"{selected_symbol} Trading Volume"
+        )
+        
+        st.plotly_chart(volume_fig, use_container_width=True)
+        
+    def _build_strategy_tab(self):
+        """
+        Build the strategy performance tab.
+        """
+        st.header("Strategy Performance")
+        
+        if not hasattr(self, 'strategy') or not self.strategy:
+            st.info("Please select a strategy from the sidebar first.")
+            return
+            
+        # Display strategy information
+        st.subheader(f"Strategy: {self.strategy.name}")
+        
+        # Strategy description based on type
+        strategy_descriptions = {
+            'Moving Average Crossover': """
+                This strategy generates buy signals when the short-term moving average crosses above
+                the long-term moving average, and sell signals when it crosses below.
+                
+                **Parameters:**
+                - Short Window: {short} days
+                - Long Window: {long} days
+            """.format(short=config.SHORT_WINDOW, long=config.LONG_WINDOW),
+            
+            'RSI Strategy': """
+                This strategy generates buy signals when the RSI indicator crosses below the oversold threshold,
+                and sell signals when it crosses above the overbought threshold.
+                
+                **Parameters:**
+                - RSI Period: {period} days
+                - Oversold Threshold: {oversold}
+                - Overbought Threshold: {overbought}
+            """.format(period=config.RSI_PERIOD, oversold=config.RSI_OVERSOLD, overbought=config.RSI_OVERBOUGHT),
+            
+            'ML Strategy': """
+                This strategy uses machine learning models to predict price movements and generate trading signals.
+                
+                **Parameters:**
+                - Model Type: {model_type}
+                - Features: {features}
+                - Confidence Threshold: {threshold}
+            """.format(
+                model_type=config.ML_STRATEGY_TYPE,
+                features=", ".join(config.ML_FEATURES[:3]) + "...",
+                threshold=config.ML_CONFIDENCE_THRESHOLD
+            ),
+            
+            'Dual Moving Average YF': """
+                This strategy is similar to the Moving Average Crossover strategy but uses data from Yahoo Finance.
+                
+                **Parameters:**
+                - Short Window: {short} days
+                - Long Window: {long} days
+            """.format(short=config.SHORT_WINDOW, long=config.LONG_WINDOW)
+        }
+        
+        # Display strategy description
+        if self.strategy.name in strategy_descriptions:
+            st.markdown(strategy_descriptions[self.strategy.name])
+        else:
+            st.markdown("No detailed description available for this strategy.")
+        
+        # Strategy performance metrics (placeholder)
+        st.subheader("Performance Metrics")
+        
+        # In a real implementation, you would calculate these metrics based on historical trades
+        # For now, we'll use placeholder values
+        col1, col2, col3, col4 = st.columns(4)
+        
+        col1.metric("Win Rate", "65%")
+        col2.metric("Profit Factor", "1.8")
+        col3.metric("Sharpe Ratio", "1.2")
+        col4.metric("Max Drawdown", "-12%")
+        
+        # Strategy backtest chart (placeholder)
+        st.subheader("Backtest Results")
+        
+        # Generate some placeholder data for the backtest chart
+        dates = pd.date_range(start='2023-01-01', periods=100, freq='D')
+        baseline = np.linspace(100, 130, 100) + np.random.normal(0, 3, 100).cumsum()
+        strategy = np.linspace(100, 150, 100) + np.random.normal(0, 4, 100).cumsum()
+        
+        backtest_df = pd.DataFrame({
+            'date': dates,
+            'Baseline': baseline,
+            'Strategy': strategy
+        })
+        
+        # Create a line chart for the backtest results
+        backtest_fig = px.line(
+            backtest_df,
+            x='date',
+            y=['Baseline', 'Strategy'],
+            title='Strategy vs. Baseline Performance',
+            labels={'value': 'Portfolio Value', 'date': 'Date'}
+        )
+        
+        st.plotly_chart(backtest_fig, use_container_width=True)
+        
+        # Strategy parameters
+        st.subheader("Strategy Parameters")
+        
+        # Display different parameters based on strategy type
+        if isinstance(self.strategy, type) and hasattr(self.strategy, '__name__'):
+            strategy_type = self.strategy.__name__
+        else:
+            strategy_type = type(self.strategy).__name__
+            
+        if strategy_type == 'MovingAverageCrossover' or strategy_type == 'DualMovingAverageYF':
+            col1, col2 = st.columns(2)
+            col1.number_input("Short Window", min_value=5, max_value=50, value=config.SHORT_WINDOW, key="short_window")
+            col2.number_input("Long Window", min_value=20, max_value=200, value=config.LONG_WINDOW, key="long_window")
+            
+        elif strategy_type == 'RSIStrategy':
+            col1, col2, col3 = st.columns(3)
+            col1.number_input("RSI Period", min_value=5, max_value=30, value=config.RSI_PERIOD, key="rsi_period")
+            col2.number_input("Oversold Threshold", min_value=10, max_value=40, value=config.RSI_OVERSOLD, key="rsi_oversold")
+            col3.number_input("Overbought Threshold", min_value=60, max_value=90, value=config.RSI_OVERBOUGHT, key="rsi_overbought")
+            
+        elif strategy_type == 'MLStrategy':
+            col1, col2 = st.columns(2)
+            col1.selectbox("Model Type", ["ensemble", "neural_network", "reinforcement", "nlp"], index=0, key="ml_model_type")
+            col2.number_input("Confidence Threshold", min_value=0.5, max_value=0.95, value=config.ML_CONFIDENCE_THRESHOLD, key="ml_confidence")
+            
+        # Note: In a real implementation, you would save these parameters and apply them to the strategy
+        
+    def _build_trading_history_tab(self):
+        """
+        Build the trading history tab.
+        """
+        st.header("Trading History")
+        
+        # In a real implementation, you would fetch actual trading history from a database
+        # For now, we'll create some placeholder data
+        
+        # Generate placeholder trading history
+        np.random.seed(42)  # For reproducible results
+        
+        num_trades = 20
+        symbols = config.SYMBOLS
+        actions = ['buy', 'sell']
+        
+        dates = pd.date_range(end=datetime.now(), periods=num_trades, freq='D')
+        
+        trades = []
+        for i in range(num_trades):
+            symbol = np.random.choice(symbols)
+            action = actions[i % 2]  # Alternate buy/sell
+            price = round(np.random.uniform(100, 500), 2)
+            quantity = np.random.randint(1, 10)
+            pl = round(np.random.uniform(-100, 200), 2) if action == 'sell' else None
+            
+            trades.append({
+                'date': dates[i],
+                'symbol': symbol,
+                'action': action,
+                'price': price,
+                'quantity': quantity,
+                'value': price * quantity,
+                'profit_loss': pl
+            })
+            
+        trades_df = pd.DataFrame(trades)
+        
+        # Display trades table
+        st.subheader("Recent Trades")
+        
+        # Format the DataFrame for display
+        display_df = trades_df.copy()
+        display_df['date'] = display_df['date'].dt.strftime('%Y-%m-%d %H:%M')
+        display_df['price'] = display_df['price'].map('${:,.2f}'.format)
+        display_df['value'] = display_df['value'].map('${:,.2f}'.format)
+        
+        # Format profit/loss
+        display_df['profit_loss'] = display_df['profit_loss'].apply(
+            lambda x: f"${x:.2f}" if pd.notnull(x) else "N/A"
+        )
+        
+        # Rename columns
+        display_df = display_df.rename(columns={
+            'date': 'Date',
+            'symbol': 'Symbol',
+            'action': 'Action',
+            'price': 'Price',
+            'quantity': 'Quantity',
+            'value': 'Value',
+            'profit_loss': 'Profit/Loss'
+        })
+        
+        # Display the table
+        st.dataframe(display_df, use_container_width=True)
+        
+        # Trading performance chart
+        st.subheader("Trading Performance")
+        
+        # Calculate cumulative P&L
+        cumulative_pl = []
+        running_total = 0
+        
+        for pl in trades_df['profit_loss']:
+            if pd.notnull(pl):
+                running_total += pl
+            cumulative_pl.append(running_total)
+            
+        performance_df = pd.DataFrame({
+            'date': trades_df['date'],
+            'cumulative_pl': cumulative_pl
+        })
+        
+        # Create a line chart for the performance
+        performance_fig = px.line(
+            performance_df,
+            x='date',
+            y='cumulative_pl',
+            title='Cumulative Profit/Loss Over Time',
+            labels={'cumulative_pl': 'Cumulative P&L ($)', 'date': 'Date'}
+        )
+        
+        # Add a horizontal line at y=0
+        performance_fig.add_hline(
+            y=0,
+            line_dash="dash",
+            line_color="gray",
+            annotation_text="Breakeven",
+            annotation_position="bottom right"
+        )
+        
+        st.plotly_chart(performance_fig, use_container_width=True)
