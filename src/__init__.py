@@ -1,0 +1,3 @@
+"""
+Alpaca Trading Bot package.
+"""

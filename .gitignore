@@ -1,0 +1,72 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs
+logs/
+*.log
+
+# Virtual Environment
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docker
+.dockerignore
+
+# ML Models
+models/*.pkl
+models/*.h5
+models/*.joblib
+models/*.pt
+models/*.onnx
+models/*.pb
+models/*.tflite
+models/*.bin
+models/*.json
+models/*.yaml
+models/*.yml
+models/*.zip
+models/*.tar
+models/*.gz
+models/*.bz2
+models/*.xz
+models/*.zst
+models/*.lz4
+models/*.lzma
+models/*.7z
+models/*.rar
+models/*.tar.gz
+models/*.tar.bz2
+models/*.tar.xz
+models/*.tar.zst
+models/*.tar.lz4
+models/*.tar.lzma
+models/*.tar.7z
+models/*.tar.rar
