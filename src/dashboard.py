@@ -982,4 +982,3 @@ class Dashboard:
                     
                     st.plotly_chart(fig, use_container_width=True)
         # Note: The performance_fig is already plotted above, no need to plot it again
-        st.plotly_chart(performance_fig, use_container_width=True)
