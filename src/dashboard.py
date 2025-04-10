@@ -11,10 +11,10 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import pytz
 from config import config
-from bot import AlpacaBot
-from data import MarketData
-from strategies import get_strategy
-from logger import get_logger
+from src.bot import AlpacaBot
+from src.data import MarketData
+from src.strategies import get_strategy
+from src.logger import get_logger
 
 logger = get_logger()
 

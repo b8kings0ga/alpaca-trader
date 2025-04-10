@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# Determine if running in Docker
+IN_DOCKER = os.environ.get('PYTHONPATH', '').startswith('/app')
+
 # Alpaca API credentials
 ALPACA_API_KEY = os.getenv('ALPACA_API_KEY')
 ALPACA_API_SECRET = os.getenv('ALPACA_API_SECRET')
@@ -46,7 +49,7 @@ RUN_TIME = '09:30'  # Time to run the bot (when RUN_FREQUENCY is 'daily')
 
 # Logging settings
 LOG_LEVEL = 'INFO'
-LOG_FILE = '/app/logs/alpaca_trader.log'
+LOG_FILE = '/app/logs/alpaca_trader.log' if IN_DOCKER else 'logs/alpaca_trader.log'
 
 # Notification settings (optional)
 ENABLE_NOTIFICATIONS = False

@@ -2,8 +2,8 @@
 Streamlit application entry point for the Alpaca Trading Bot Dashboard.
 """
 import streamlit as st
-from dashboard import Dashboard
-from bot import setup_logging
+from src.dashboard import Dashboard
+from src.bot import setup_logging
 
 def main():
     """

@@ -43,7 +43,7 @@ class TradingScheduler:
         else:
             logger.warning("Scheduler is not running")
             
-    def add_job(self, job_func, job_id=None):
+    def add_job(self, job_func, job_id=None, interval_minutes=None):
         """
         Add a job to the scheduler based on configuration.
         
@@ -53,6 +53,9 @@ class TradingScheduler:
             
         Returns:
             str: Job ID
+            
+        Note:
+            The job will run every interval_minutes minutes.
         """
         if not job_id:
             job_id = f"trading_job_{int(time.time())}"
@@ -94,7 +97,7 @@ class TradingScheduler:
             
         elif config.RUN_FREQUENCY == 'minutes':
             # Get the interval in minutes
-            interval = getattr(config, 'RUN_INTERVAL', 15)  # Default to 15 minutes if not specified
+            interval = interval_minutes if interval_minutes is not None else getattr(config, 'RUN_INTERVAL', 5)  # Default to 5 minutes if not specified
             
             # Add the job with a minutes interval trigger
             self.scheduler.add_job(
@@ -106,7 +109,6 @@ class TradingScheduler:
             )
             
             logger.info(f"Added job to run every {interval} minutes")
-            logger.info(f"Added hourly job at minute 0")
             
         else:
             logger.error(f"Unknown run frequency: {config.RUN_FREQUENCY}")

@@ -9,6 +9,10 @@ matplotlib>=3.4.0
 yfinance>=0.2.0
 streamlit>=1.22.0
 plotly>=5.14.0
+fastapi>=0.95.0
+uvicorn>=0.22.0
+requests>=2.28.0
+pydantic>=1.10.0
 
 # ML-related packages (commented out by default, uncomment when implementing ML strategies)
 # scikit-learn>=1.0.0

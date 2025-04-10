@@ -8,6 +8,8 @@ import pytz
 from config import config
 from src.logger import get_logger
 from src.data import MarketData
+from src.yfinance_data import YFinanceData
+from src.yfinance_db_client import YFinanceDBClient
 from src.strategies import get_strategy
 from src.trader import Trader
 from src.notifications import NotificationSystem
@@ -19,21 +21,35 @@ class AlpacaBot:
     """
     Main trading bot class that orchestrates the trading process.
     """
-    def __init__(self, strategy_name='moving_average_crossover'):
+    def __init__(self, strategy_name='moving_average_crossover', data_source='yfinance'):
         """
         Initialize the trading bot.
         
         Args:
             strategy_name (str): Name of the strategy to use
         """
-        logger.info(f"Initializing AlpacaBot with strategy: {strategy_name}")
+        logger.info(f"Initializing AlpacaBot with strategy: {strategy_name}, data source: {data_source}")
         
         # Check if API credentials are set
         if not config.ALPACA_API_KEY or not config.ALPACA_API_SECRET:
             raise ValueError("Alpaca API credentials not set")
             
         # Initialize components
-        self.market_data = MarketData()
+        if data_source == 'yfinance':
+            self.market_data = YFinanceData()
+            logger.info("Using YFinanceData for market data")
+        elif data_source == 'yfinance-db':
+            self.market_data = YFinanceDBClient()
+            # Check if the service is available
+            if not self.market_data.is_service_available():
+                logger.warning("YFinance DB service is not available, falling back to YFinanceData")
+                self.market_data = YFinanceData()
+            else:
+                logger.info("Using YFinance DB service for market data")
+        else:
+            self.market_data = MarketData()
+            logger.info("Using Alpaca MarketData for market data")
+            
         self.strategy = get_strategy(strategy_name)
         self.trader = Trader()
         self.notification = NotificationSystem()
@@ -43,15 +59,19 @@ class AlpacaBot:
         self.last_run_time = None
         self.is_running = False
         
+        # Create data directory if it doesn't exist
+        import os
+        os.makedirs('data/cache', exist_ok=True)
+        
         logger.info("AlpacaBot initialized successfully")
         
-    def run(self, use_yfinance=False):
+    def run(self, force_initial_positions=True):
         """
-            Run the trading bot once.
-            
-            Args:
-                use_yfinance (bool): Whether to use yfinance for data instead of Alpaca API
-            """
+        Run the trading bot once.
+        
+        Args:
+            force_initial_positions (bool): Whether to force creating initial positions if none exist
+        """
         if self.is_running:
             logger.warning("Bot is already running")
             return
@@ -101,25 +121,36 @@ class AlpacaBot:
             logger.info(f"Current positions: {len(positions)}")
             # Fetch market data
             data = None
-            # Check if we're using a yfinance-based strategy
-            logger.info(f"Strategy type: {type(self.strategy).__name__}")
-            logger.info(f"Strategy has fetch_data: {hasattr(self.strategy, 'fetch_data')}")
-            logger.info(f"use_yfinance parameter: {use_yfinance}")
             
-            if use_yfinance or (hasattr(self.strategy, 'fetch_data') and callable(getattr(self.strategy, 'fetch_data'))):
-                logger.info("Using yfinance to fetch market data")
-                if hasattr(self.strategy, 'fetch_data') and callable(getattr(self.strategy, 'fetch_data')):
-                    data = self.strategy.fetch_data(config.SYMBOLS)
+            # Try to get recent data first (last 15 minutes)
+            try:
+                logger.info("Attempting to fetch recent data (last 15 minutes)")
+                recent_data = self.market_data.get_recent_data(config.SYMBOLS, minutes=15, interval="1m")
+                if recent_data and len(recent_data) > 0:
+                    logger.info(f"Successfully fetched recent data for {len(recent_data)} symbols")
+                    data = recent_data
                 else:
-                    # If strategy doesn't have fetch_data but use_yfinance is True,
-                    # switch to a strategy that does have fetch_data
-                    logger.info("Strategy doesn't have fetch_data method, switching to DualMovingAverageYF")
-                    from src.strategies import get_strategy
-                    temp_strategy = get_strategy('dual_ma_yf')
-                    data = temp_strategy.fetch_data(config.SYMBOLS)
-            else:
-                logger.info("Using Alpaca API to fetch market data")
-                data = self.market_data.get_bars(config.SYMBOLS)
+                    logger.warning("Failed to fetch recent data, falling back to historical data")
+            except Exception as e:
+                logger.warning(f"Error fetching recent data: {e}")
+                logger.warning("Falling back to historical data")
+            
+            # If recent data fetch failed, try historical data
+            if data is None:
+                if hasattr(self.strategy, 'fetch_data') and callable(getattr(self.strategy, 'fetch_data')):
+                    logger.info("Using yfinance to fetch market data")
+                    if hasattr(self.strategy, 'fetch_data') and callable(getattr(self.strategy, 'fetch_data')):
+                        data = self.strategy.fetch_data(config.SYMBOLS)
+                    else:
+                        # If strategy doesn't have fetch_data but use_yfinance is True,
+                        # switch to a strategy that does have fetch_data
+                        logger.info("Strategy doesn't have fetch_data method, switching to DualMovingAverageYF")
+                        from src.strategies import get_strategy
+                        temp_strategy = get_strategy('dual_ma_yf')
+                        data = temp_strategy.fetch_data(config.SYMBOLS)
+                else:
+                    logger.info("Using Alpaca API to fetch market data")
+                    data = self.market_data.get_bars(config.SYMBOLS)
                 
             if not data:
                 logger.error("Failed to fetch market data")
@@ -137,8 +168,8 @@ class AlpacaBot:
             for symbol, signal_data in signals.items():
                 logger.info(f"Signal for {symbol}: {signal_data['action']} (changed: {signal_data.get('signal_changed', False)})")
             
-            # Execute signals
-            executed_orders = self.trader.execute_signals(signals, account_info)
+            # Execute signals with option to force initial positions
+            executed_orders = self.trader.execute_signals(signals, account_info, force_initial_positions)
             logger.info(f"Executed {len(executed_orders)} orders")
             
             # Send notifications for executed orders
@@ -233,23 +264,17 @@ class AlpacaBot:
             logger.error(f"Error waiting for market open: {e}")
             return False
     
-    def start_scheduled(self, wait_for_open=False, use_yfinance=False):
+    def start_scheduled(self, wait_for_open=False):
         """
         Start the bot with scheduling.
         
         Args:
             wait_for_open (bool): Whether to wait for market open before starting
-            use_yfinance (bool): Whether to use yfinance for data instead of Alpaca API
-        
         Returns:
             str: Job ID
         """
         logger.info("Starting scheduled trading")
         
-        # If using yfinance, switch to the dual_ma_yf strategy
-        if use_yfinance:
-            logger.info("Using yfinance for data with Dual Moving Average strategy")
-            self.strategy = get_strategy('dual_ma_yf')
         
         # Wait for market open if requested
         if wait_for_open:
@@ -257,12 +282,16 @@ class AlpacaBot:
             if not self.wait_for_market_open():
                 logger.warning("Failed to wait for market open. Starting scheduled trading anyway.")
         
-        # Create a partial function with use_yfinance parameter
+        # Create a partial function for running
         import functools
-        run_with_params = functools.partial(self.run, use_yfinance=use_yfinance)
+        run_with_params = functools.partial(self.run)
         
-        # Add job to scheduler
-        job_id = self.scheduler.add_job(run_with_params)
+        # Get interval in minutes - run more frequently
+        interval = getattr(config, 'RUN_INTERVAL', 5)  # Default to 5 minutes if not specified
+        logger.info(f"Setting up scheduler to run every {interval} minutes")
+        
+        # Add job to scheduler with more frequent interval
+        job_id = self.scheduler.add_job(run_with_params, interval_minutes=interval)
         
         # Start the scheduler
         self.scheduler.start()

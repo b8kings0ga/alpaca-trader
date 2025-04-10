@@ -68,8 +68,15 @@ class MovingAverageCrossover(Strategy):
         signals = {}
         
         for symbol, df in data.items():
-            if df.empty or len(df) < self.long_window:
-                logger.warning(f"Not enough data for {symbol} to generate signals")
+            logger.info(f"Analyzing data for {symbol}: {len(df)} data points available")
+            logger.info(f"Strategy requires at least {self.long_window} data points")
+            
+            if df.empty:
+                logger.warning(f"DataFrame is empty for {symbol}")
+                continue
+                
+            if len(df) < self.long_window:
+                logger.warning(f"Not enough data for {symbol} to generate signals. Need {self.long_window}, got {len(df)}")
                 continue
                 
             # Create a copy of the DataFrame

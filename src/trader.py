@@ -15,15 +15,24 @@ class Trader:
         """
         Initialize the Trader class with Alpaca API.
         """
+        # Log the API URLs for debugging
+        logger.info(f"Initializing Trader with base URL: {config.ALPACA_BASE_URL}")
+        
+        # Remove trailing /v2 from base URL if present to avoid duplicate version in path
+        base_url = config.ALPACA_BASE_URL
+        if base_url.endswith('/v2'):
+            base_url = base_url[:-3]
+            logger.info(f"Adjusted base URL to avoid duplicate version: {base_url}")
+        
         self.api = tradeapi.REST(
             config.ALPACA_API_KEY,
             config.ALPACA_API_SECRET,
-            config.ALPACA_BASE_URL,
+            base_url,
             api_version='v2'
         )
         logger.info("Trader initialized")
         
-    def execute_signals(self, signals, account_info):
+    def execute_signals(self, signals, account_info, force_initial_positions=False):
         """
         Execute trades based on signals.
         
@@ -36,6 +45,129 @@ class Trader:
         """
         executed_orders = []
         
+        # If force_initial_positions is True and we have no positions, create initial positions
+        current_positions = {p.symbol: p for p in self.api.list_positions()}
+        
+        # Get portfolio value from account info
+        portfolio_value = float(account_info.get('portfolio_value', 100000.0))
+        
+        if force_initial_positions and len(current_positions) == 0:
+            logger.info("No current positions found. Creating initial positions based on current signals.")
+            logger.info(f"Signals available: {list(signals.keys())}")
+            
+            # Filter for buy signals or create balanced portfolio if no buy signals
+            buy_signals = {symbol: data for symbol, data in signals.items()
+                          if data['action'] == 'buy' or data['signal'] > 0}
+            
+            logger.info(f"Buy signals found: {list(buy_signals.keys())}")
+            
+            # If no buy signals, use all symbols with a balanced approach
+            if not buy_signals:
+                logger.info("No buy signals found. Creating balanced initial positions.")
+                # Use all symbols with equal weight
+                symbols_to_buy = list(signals.keys())
+                
+                logger.info(f"Symbols to buy (all signals): {symbols_to_buy}")
+                
+                # Check if symbols_to_buy is empty to avoid division by zero
+                if not symbols_to_buy:
+                    logger.warning("No symbols available for initial positions")
+                    logger.warning(f"Signals dictionary: {signals}")
+                    logger.warning("This is likely due to insufficient data for signal generation")
+                    return executed_orders
+                    
+                # Use default symbols if none are available in signals
+                if len(symbols_to_buy) == 0:
+                    logger.info("Using default symbols for initial positions")
+                    symbols_to_buy = config.SYMBOLS
+                    
+                # Log the symbols we're going to buy
+                logger.info(f"Creating initial positions for: {symbols_to_buy}")
+                
+                # Calculate position size per symbol
+                position_size_per_symbol = portfolio_value * config.POSITION_SIZE / len(symbols_to_buy)
+                
+                for symbol in symbols_to_buy:
+                    if symbol in current_positions:
+                        logger.info(f"Already have position in {symbol}, skipping")
+                        continue
+                        
+                    # Check if price exists and is valid
+                    if 'price' not in signals[symbol] or signals[symbol]['price'] <= 0:
+                        logger.warning(f"Invalid or missing price for {symbol}")
+                        # Use a default price based on historical data or a fixed value
+                        try:
+                            # Try to get the latest price from Alpaca
+                            latest_bar = self.api.get_latest_bar(symbol)
+                            price = latest_bar.c  # Close price
+                            logger.info(f"Using latest price from Alpaca for {symbol}: ${price:.2f}")
+                        except Exception as e:
+                            logger.error(f"Error getting latest price for {symbol}: {e}")
+                            # Use a default price as fallback
+                            price = 100.0  # Default price
+                            logger.info(f"Using default price for {symbol}: ${price:.2f}")
+                    else:
+                        price = signals[symbol]['price']
+                    
+                    # Calculate quantity based on position size and price
+                    qty = int(position_size_per_symbol / price)
+                    
+                    # Ensure minimum quantity
+                    if qty <= 0:
+                        qty = 1  # Minimum quantity
+                        logger.warning(f"Adjusted quantity for {symbol} to minimum: {qty}")
+                    
+                    logger.info(f"Calculated quantity for {symbol}: {qty} shares at ${price:.2f}")
+                        
+                    try:
+                        order = self.api.submit_order(
+                            symbol=symbol,
+                            qty=qty,
+                            side='buy',
+                            type='market',
+                            time_in_force='day'
+                        )
+                        logger.info(f"Initial position: Buy order placed for {qty} shares of {symbol} at ~${price:.2f}")
+                        executed_orders.append(self._format_order(order))
+                    except Exception as e:
+                        logger.error(f"Error creating initial position for {symbol}: {e}")
+            else:
+                # Use buy signals
+                # Check if buy_signals is empty to avoid division by zero
+                if not buy_signals:
+                    logger.warning("No buy signals available for initial positions")
+                    return executed_orders
+                    
+                # Log the symbols we're going to buy
+                logger.info(f"Creating initial positions based on buy signals for: {list(buy_signals.keys())}")
+                
+                # Calculate position size per symbol
+                position_size_per_symbol = portfolio_value * config.POSITION_SIZE / len(buy_signals)
+                
+                for symbol, signal_data in buy_signals.items():
+                    if symbol in current_positions:
+                        continue
+                        
+                    price = signal_data['price']
+                    qty = int(position_size_per_symbol / price)
+                    
+                    if qty <= 0 or price <= 0:
+                        logger.warning(f"Invalid quantity ({qty}) or price ({price}) for {symbol}")
+                        continue
+                        
+                    try:
+                        order = self.api.submit_order(
+                            symbol=symbol,
+                            qty=qty,
+                            side='buy',
+                            type='market',
+                            time_in_force='day'
+                        )
+                        logger.info(f"Initial position: Buy order placed for {qty} shares of {symbol} at ~${price:.2f}")
+                        executed_orders.append(self._format_order(order))
+                    except Exception as e:
+                        logger.error(f"Error creating initial position for {symbol}: {e}")
+        
         # Check if we have enough buying power
         buying_power = float(account_info.get('buying_power', 0))
         if buying_power <= 0:
@@ -46,7 +178,13 @@ class Trader:
         portfolio_value = float(account_info.get('portfolio_value', 0))
         position_value = portfolio_value * config.POSITION_SIZE
         
-        # Get current positions
+        # Get current positions (refresh after potential initial positions)
+        if force_initial_positions and executed_orders:
+            # Wait a moment for orders to process
+            import time
+            time.sleep(2)
+            
+        # Refresh positions
         current_positions = {p.symbol: p for p in self.api.list_positions()}
         
         # Process signals

@@ -18,10 +18,20 @@ class MarketData:
         """
         Initialize the MarketData class with Alpaca API.
         """
+        # Log the API URLs for debugging
+        logger.info(f"Initializing MarketData with base URL: {config.ALPACA_BASE_URL}")
+        logger.info(f"Data URL: {config.ALPACA_DATA_URL}")
+        
+        # Remove trailing /v2 from base URL if present to avoid duplicate version in path
+        base_url = config.ALPACA_BASE_URL
+        if base_url.endswith('/v2'):
+            base_url = base_url[:-3]
+            logger.info(f"Adjusted base URL to avoid duplicate version: {base_url}")
+        
         self.api = tradeapi.REST(
             config.ALPACA_API_KEY,
             config.ALPACA_API_SECRET,
-            config.ALPACA_BASE_URL,
+            base_url,
             api_version='v2'
         )
         logger.info("MarketData initialized")
@@ -48,20 +58,65 @@ class MarketData:
             # Fetch bars for all symbols
             bars = {}
             for symbol in symbols:
-                df = self.api.get_bars(
-                    symbol,
-                    timeframe,
-                    start=start_date.strftime('%Y-%m-%d'),
-                    end=end_date.strftime('%Y-%m-%d'),
-                    adjustment='raw'
-                ).df
+                logger.info(f"Attempting to fetch bars for {symbol} from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+                df = None
+                
+                # First try with Alpaca API
+                try:
+                    df = self.api.get_bars(
+                        symbol,
+                        timeframe,
+                        start=start_date.strftime('%Y-%m-%d'),
+                        end=end_date.strftime('%Y-%m-%d'),
+                        adjustment='raw'
+                    ).df
+                    logger.info(f"Successfully fetched {len(df)} bars for {symbol} from Alpaca API")
+                except Exception as e:
+                    logger.warning(f"Error fetching bars for {symbol} from Alpaca API: {e}")
+                    logger.info(f"Attempting to fetch data for {symbol} using yfinance as fallback")
+                    df = None
+                
+                # If Alpaca API failed or returned empty data, try with yfinance
+                if df is None or df.empty:
+                    try:
+                        import yfinance as yf
+                        # Convert timeframe to yfinance interval format
+                        interval = '1d' if timeframe == '1D' else '1h' if timeframe == '1H' else '1m'
+                        ticker = yf.Ticker(symbol)
+                        yf_df = ticker.history(
+                            start=start_date.strftime('%Y-%m-%d'),
+                            end=end_date.strftime('%Y-%m-%d'),
+                            interval=interval
+                        )
+                        
+                        if not yf_df.empty:
+                            # Rename columns to match Alpaca format
+                            yf_df = yf_df.rename(columns={
+                                'Open': 'open',
+                                'High': 'high',
+                                'Low': 'low',
+                                'Close': 'close',
+                                'Volume': 'volume'
+                            })
+                            # Reset index to make Date a column named 'timestamp'
+                            yf_df = yf_df.reset_index()
+                            yf_df = yf_df.rename(columns={'Date': 'timestamp'})
+                            df = yf_df
+                            logger.info(f"Successfully fetched {len(df)} bars for {symbol} from yfinance")
+                        else:
+                            logger.warning(f"No data found for {symbol} from yfinance")
+                            continue
+                    except Exception as e:
+                        logger.error(f"Error fetching data for {symbol} from yfinance: {e}")
+                        continue
                 
                 if df.empty:
-                    logger.warning(f"No data found for {symbol}")
+                    logger.warning(f"No data found for {symbol} from any source")
                     continue
-                    
-                # Reset index to make timestamp a column
-                df = df.reset_index()
+                
+                # If df is from Alpaca, reset index to make timestamp a column
+                if 'timestamp' not in df.columns and df.index.name == 'timestamp':
+                    df = df.reset_index()
                 
                 # Add technical indicators
                 df = self.add_indicators(df)
@@ -92,9 +147,33 @@ class MarketData:
         gain = delta.where(delta > 0, 0).rolling(window=config.RSI_PERIOD).mean()
         loss = -delta.where(delta < 0, 0).rolling(window=config.RSI_PERIOD).mean()
         
+        # Check for zero values in loss to avoid division by zero
+        # This can happen when there are no price decreases in the window
+        zero_loss_mask = loss == 0
+        if zero_loss_mask.any():
+            logger.warning(f"Found {zero_loss_mask.sum()} zero values in loss calculation for RSI")
+            
+        # Replace zeros with a small value to avoid division by zero
+        loss = loss.replace(0, 1e-10)
+        
         rs = gain / loss
+        
+        # Check for infinity values
+        inf_mask = np.isinf(rs)
+        if inf_mask.any():
+            logger.warning(f"Found {inf_mask.sum()} infinity values in RS calculation for RSI")
+            # Replace infinity with a large value
+            rs = rs.replace([np.inf, -np.inf], 100)
+            
         df['rsi'] = 100 - (100 / (1 + rs))
         
+        # Check for NaN values
+        nan_mask = np.isnan(df['rsi'])
+        if nan_mask.any():
+            logger.warning(f"Found {nan_mask.sum()} NaN values in RSI calculation")
+            # Replace NaN with 50 (neutral RSI value)
+            df['rsi'] = df['rsi'].fillna(50)
+            
         return df
 
     def get_account(self):
@@ -184,3 +263,122 @@ class MarketData:
             logger.error(f"Error fetching market hours: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             return (None, None)
+            
+    def get_recent_data(self, symbols, minutes=15, timeframe='1Min'):
+        """
+        Get the most recent market data for the specified symbols.
+        
+        Args:
+            symbols (list): List of stock symbols
+            minutes (int): Number of minutes of recent data to fetch
+            timeframe (str): Bar timeframe (1Min, 5Min, etc.)
+            
+        Returns:
+            dict: Dictionary of DataFrames with recent data for each symbol
+        """
+        logger.info(f"Fetching recent {minutes} minutes of {timeframe} data for {symbols}")
+        
+        # Calculate start and end times
+        end_time = datetime.now()
+        start_time = end_time - timedelta(minutes=minutes)
+        
+        # Initialize storage for the data
+        recent_data = {}
+        
+        for symbol in symbols:
+            logger.info(f"Attempting to fetch recent data for {symbol}")
+            df = None
+            
+            # First try with Alpaca API
+            try:
+                df = self.api.get_bars(
+                    symbol,
+                    timeframe,
+                    start=start_time.isoformat(),
+                    end=end_time.isoformat(),
+                    adjustment='raw'
+                ).df
+                logger.info(f"Successfully fetched {len(df)} recent bars for {symbol} from Alpaca API")
+            except Exception as e:
+                logger.warning(f"Error fetching recent data for {symbol} from Alpaca API: {e}")
+                df = None
+            
+            # If Alpaca API failed or returned empty data, try with yfinance
+            if df is None or df.empty:
+                try:
+                    import yfinance as yf
+                    # Convert timeframe to yfinance interval format
+                    interval = '1m'  # Default to 1 minute for recent data
+                    if timeframe == '5Min':
+                        interval = '5m'
+                    elif timeframe == '15Min':
+                        interval = '15m'
+                    
+                    ticker = yf.Ticker(symbol)
+                    # For very recent data, we need to use a period instead of start/end dates
+                    period = "1d"  # Get 1 day of data and filter later
+                    yf_df = ticker.history(period=period, interval=interval)
+                    
+                    if not yf_df.empty:
+                        # Filter to only include the last 'minutes' minutes
+                        now = pd.Timestamp.now(tz=yf_df.index.tz)
+                        cutoff = now - pd.Timedelta(minutes=minutes)
+                        yf_df = yf_df[yf_df.index >= cutoff]
+                        
+                        # Rename columns to match Alpaca format
+                        yf_df = yf_df.rename(columns={
+                            'Open': 'open',
+                            'High': 'high',
+                            'Low': 'low',
+                            'Close': 'close',
+                            'Volume': 'volume'
+                        })
+                        # Reset index to make Date a column named 'timestamp'
+                        yf_df = yf_df.reset_index()
+                        yf_df = yf_df.rename(columns={'Date': 'timestamp', 'Datetime': 'timestamp'})
+                        df = yf_df
+                        logger.info(f"Successfully fetched {len(df)} recent bars for {symbol} from yfinance")
+                    else:
+                        logger.warning(f"No recent data found for {symbol} from yfinance")
+                        continue
+                except Exception as e:
+                    logger.error(f"Error fetching recent data for {symbol} from yfinance: {e}")
+                    continue
+            
+            if df is None or df.empty:
+                logger.warning(f"No recent data found for {symbol} from any source")
+                continue
+            
+            # If df is from Alpaca, reset index to make timestamp a column
+            if 'timestamp' not in df.columns and df.index.name == 'timestamp':
+                df = df.reset_index()
+            
+            # Add technical indicators
+            df = self.add_indicators(df)
+            
+            # Store the data
+            recent_data[symbol] = df
+            
+            # Save to local cache
+            self._save_to_cache(symbol, df)
+        
+        return recent_data
+    
+    def _save_to_cache(self, symbol, df):
+        """
+        Save market data to a local cache file.
+        
+        Args:
+            symbol (str): Stock symbol
+            df (DataFrame): DataFrame with market data
+        """
+        try:
+            import os
+            cache_dir = os.path.join('data', 'cache')
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            cache_file = os.path.join(cache_dir, f"{symbol}_recent.csv")
+            df.to_csv(cache_file, index=False)
+            logger.info(f"Saved recent data for {symbol} to cache: {cache_file}")
+        except Exception as e:
+            logger.error(f"Error saving data to cache for {symbol}: {e}")

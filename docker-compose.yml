@@ -1,7 +1,27 @@
 version: '3.8'
 
 services:
-  # Using yfinance as a fallback for Alpaca API data due to subscription limitations
+  # YFinance data service for fetching and storing market data
+  yfinance-db:
+    build:
+      context: .
+      dockerfile: Dockerfile.yfinance-db
+    container_name: yfinance-db
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    ports:
+      - "8001:8001"
+    environment:
+      - MAX_DB_SIZE_GB=${MAX_DB_SIZE_GB:-10}
+      - FETCH_INTERVAL_MINUTES=${FETCH_INTERVAL_MINUTES:-60}
+      - SYMBOLS=${SYMBOLS:-AAPL,MSFT,AMZN,GOOGL,META}
+      - TZ=America/New_York
+    env_file:
+      - .env
+
+  # Using yfinance-db service for market data
   alpaca-trader:
     build:
       context: .
@@ -16,9 +36,14 @@ services:
       - ALPACA_API_SECRET=${ALPACA_API_SECRET}
       - ALPACA_BASE_URL=${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
       - ALPACA_DATA_URL=${ALPACA_DATA_URL:-https://data.alpaca.markets}
+      - USE_YFINANCE_DB=true
+      - YFINANCE_DB_HOST=yfinance-db
+      - YFINANCE_DB_PORT=8001
       - TZ=America/New_York
     env_file:
       - .env
+    depends_on:
+      - yfinance-db
 
   # Streamlit dashboard for visualizing trading data and performance
   dashboard:
