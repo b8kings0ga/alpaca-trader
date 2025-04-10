@@ -138,6 +138,87 @@ class YFinanceDataService:
         logger.info("Database tables created if they didn't exist")
         logger.info("Database schema includes tables for market data, signals, and trades")
         
+        # Check if we need to initialize sample data
+        if os.getenv("INIT_SAMPLE_DATA", "false").lower() == "true":
+            logger.info("INIT_SAMPLE_DATA is set to true, initializing sample data")
+            self._init_sample_data()
+        else:
+            logger.info("INIT_SAMPLE_DATA is not set to true, skipping sample data initialization")
+        # Removed duplicate call to _init_sample_data()
+        
+    def _init_sample_data(self):
+        """Initialize database with sample data for testing."""
+        logger.info("Initializing sample data for testing")
+        
+        try:
+            # Check if the database file exists
+            import os.path
+            if os.path.exists(DB_PATH):
+                logger.info(f"Database file exists at {DB_PATH}")
+            else:
+                logger.warning(f"Database file does not exist at {DB_PATH}")
+                
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            # Sample trading signals for common symbols
+            for symbol in ["AAPL", "MSFT", "AMZN", "GOOGL", "META"]:
+                # Create a few sample signals with different timestamps
+                for i in range(5):
+                    timestamp = (datetime.now() - timedelta(days=i)).isoformat()
+                    action = "buy" if i % 2 == 0 else "sell"
+                    price = 100.0 + i * 5.0
+                    signal_value = 1.0 if action == "buy" else -1.0
+                    signal_changed = i == 0
+                    
+                    cursor.execute('''
+                    INSERT OR REPLACE INTO trading_signals
+                    (symbol, timestamp, action, signal, signal_changed, price, short_ma, long_ma, rsi, interval, strategy)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        symbol, timestamp, action, signal_value, signal_changed, price,
+                        50.0, 200.0, 60.0, DEFAULT_INTERVAL, "default"
+                    ))
+            
+            # Sample executed trades for common symbols
+            for symbol in ["AAPL", "MSFT", "AMZN"]:
+                # Create a few sample trades with different timestamps
+                for i in range(3):
+                    timestamp = (datetime.now() - timedelta(days=i)).isoformat()
+                    side = "buy" if i % 2 == 0 else "sell"
+                    quantity = 10.0
+                    price = 100.0 + i * 5.0
+                    
+                    cursor.execute('''
+                    INSERT INTO executed_trades
+                    (order_id, symbol, timestamp, side, quantity, price, status, signal_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        f"order-{symbol}-{i}", symbol, timestamp, side, quantity, price, "filled", None
+                    ))
+            
+            # Count the number of records inserted
+            cursor.execute("SELECT COUNT(*) FROM trading_signals")
+            signal_count = cursor.fetchone()[0]
+            logger.info(f"Sample data initialization: {signal_count} signals in trading_signals table")
+            
+            # Log the actual signals for debugging
+            cursor.execute("SELECT symbol, timestamp, action FROM trading_signals LIMIT 5")
+            signals = cursor.fetchall()
+            logger.info(f"Sample signals: {signals}")
+            
+            cursor.execute("SELECT COUNT(*) FROM executed_trades")
+            trade_count = cursor.fetchone()[0]
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Sample data initialized successfully: {signal_count} signals, {trade_count} trades")
+            
+        except Exception as e:
+            logger.error(f"Error initializing sample data: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
     def fetch_and_store_data(self, symbols: List[str], period: str = "7d", interval: str = DEFAULT_INTERVAL):
         """
         Fetch data from Yahoo Finance and store it in the database.
@@ -647,9 +728,67 @@ async def root():
         "endpoints": [
             "/data/{symbol}",
             "/stats",
-            "/fetch"
+            "/fetch",
+            "/health",
+            "/signals/{symbol}",
+            "/trades/{symbol}"
         ]
     }
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    logger.info("Root endpoint called")
+    return {
+        "message": "YFinance Data Service API",
+        "version": "1.0.0",
+        "endpoints": [
+            "/health",
+            "/data/{symbol}",
+            "/signals/{symbol}",
+            "/trades/{symbol}"
+        ]
+    }
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    logger.info("Health check endpoint called")
+    
+    # Check database connection
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Check if tables exist
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = cursor.fetchall()
+        table_names = [t[0] for t in tables]
+        logger.info(f"Database tables: {table_names}")
+        
+        # Check record counts
+        record_counts = {}
+        for table in ['market_data', 'trading_signals', 'executed_trades']:
+            if table in table_names:
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                count = cursor.fetchone()[0]
+                record_counts[table] = count
+        
+        logger.info(f"Record counts: {record_counts}")
+        conn.close()
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "database": {
+                "tables": table_names,
+                "record_counts": record_counts
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error in health check: {e}")
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 @app.get("/data/{symbol}")
 async def get_data(symbol: str,
@@ -876,6 +1015,30 @@ async def get_signals(symbol: str, limit: int = 100):
         conn.close()
         
         if df.empty:
+            logger.warning(f"No signals found for {symbol} in the database")
+            # Check if the table exists and has any records
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM trading_signals")
+            total_signals = cursor.fetchone()[0]
+            logger.info(f"Total signals in the database: {total_signals}")
+            
+            # Check if there are any signals for other symbols
+            cursor.execute("SELECT DISTINCT symbol FROM trading_signals")
+            symbols = cursor.fetchall()
+            logger.info(f"Symbols with signals: {[s[0] for s in symbols]}")
+            
+            # Check if the table structure is correct
+            cursor.execute("PRAGMA table_info(trading_signals)")
+            table_info = cursor.fetchall()
+            logger.info(f"Trading signals table structure: {table_info}")
+            
+            # Check if there are any records at all
+            cursor.execute("SELECT * FROM trading_signals LIMIT 5")
+            sample_records = cursor.fetchall()
+            logger.info(f"Sample records from trading_signals: {sample_records}")
+            conn.close()
+            
             return JSONResponse(
                 status_code=404,
                 content={"message": f"No signals found for {symbol}"}
@@ -916,6 +1079,18 @@ async def get_trades(symbol: str, limit: int = 100):
         conn.close()
         
         if df.empty:
+            logger.warning(f"No trades found for {symbol} in the database")
+            # Check if the table exists and has any records
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM executed_trades")
+            total_trades = cursor.fetchone()[0]
+            logger.info(f"Total trades in the database: {total_trades}")
+            
+            # Check if there are any trades for other symbols
+            cursor.execute("SELECT DISTINCT symbol FROM executed_trades")
+            symbols = cursor.fetchall()
+            logger.info(f"Symbols with trades: {[s[0] for s in symbols]}")
+            
             return JSONResponse(
                 status_code=404,
                 content={"message": f"No trades found for {symbol}"}
@@ -1106,6 +1281,15 @@ def main():
         id='historical_data_fetch',
         replace_existing=True
     )
+    
+    # Log configuration
+    logger.info(f"YFinance DB Service Configuration:")
+    logger.info(f"- MAX_DB_SIZE_GB: {MAX_DB_SIZE_GB}")
+    logger.info(f"- FETCH_INTERVAL_MINUTES: {FETCH_INTERVAL_MINUTES}")
+    logger.info(f"- SYMBOLS: {SYMBOLS}")
+    logger.info(f"- DB_PATH: {DB_PATH}")
+    logger.info(f"- DEFAULT_INTERVAL: {DEFAULT_INTERVAL}")
+    logger.info(f"- INIT_SAMPLE_DATA: {os.getenv('INIT_SAMPLE_DATA', 'false')}")
     
     # Start the scheduler
     scheduler.start()

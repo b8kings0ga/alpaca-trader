@@ -28,6 +28,10 @@ class Dashboard:
         Initialize the dashboard.
         """
         self.market_data = MarketData()
+        
+        # Set up a background thread to periodically check the connection
+        self.connection_check_interval = 60  # seconds
+        self._setup_connection_check_thread()
         self.strategies = {
             'moving_average_crossover': 'Moving Average Crossover',
             'rsi': 'RSI Strategy',
@@ -64,30 +68,86 @@ class Dashboard:
         Returns:
             DataFrame: DataFrame with trading signals
         """
+        # Check if YFinance DB service is connected
+        if not self.yfinance_db_connected:
+            logger.warning(f"YFinance DB service is not connected. Attempting to reconnect...")
+            if not self.check_yfinance_db_connection():
+                logger.error(f"Failed to connect to YFinance DB service. Cannot retrieve trading signals.")
+                return pd.DataFrame()
+        
         try:
             url = f"{self.yfinance_db_url}/signals/{symbol}"
             params = {"limit": limit}
             
-            response = requests.get(url, params=params, timeout=10)
+            logger.info(f"Requesting trading signals from: {url} with params: {params}")
+            logger.info(f"YFinance DB connection status: {self.yfinance_db_connected}")
             
-            if response.status_code == 200:
-                data = response.json()
-                if data:
-                    df = pd.DataFrame(data)
-                    # Convert timestamp strings to datetime
-                    if 'timestamp' in df.columns:
-                        df['timestamp'] = pd.to_datetime(df['timestamp'])
-                    logger.info(f"Retrieved {len(df)} trading signals for {symbol}")
-                    return df
+            # Use a session for connection pooling and retry mechanism
+            session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(
+                max_retries=3,  # Retry up to 3 times
+                pool_connections=10,
+                pool_maxsize=10
+            )
+            session.mount('http://', adapter)
+            session.mount('https://', adapter)
+            
+            try:
+                response = session.get(url, params=params, timeout=10)
+                
+                logger.info(f"Signals response status code: {response.status_code}")
+                logger.info(f"Response headers: {response.headers}")
+                
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        logger.info(f"Received JSON data: {data[:5] if data else 'Empty'}")
+                        if data:
+                            df = pd.DataFrame(data)
+                            # Convert timestamp strings to datetime
+                            if 'timestamp' in df.columns:
+                                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                            logger.info(f"Retrieved {len(df)} trading signals for {symbol}")
+                            logger.info(f"DataFrame columns: {df.columns.tolist()}")
+                            logger.info(f"First few rows: {df.head(2).to_dict('records')}")
+                            return df
+                        else:
+                            logger.warning(f"No trading signals found for {symbol} (empty response)")
+                            return pd.DataFrame()
+                    except ValueError as json_e:
+                        logger.error(f"Error parsing JSON response for trading signals: {json_e}")
+                        logger.error(f"Response content: {response.text[:200]}...")
+                        return pd.DataFrame()
                 else:
-                    logger.warning(f"No trading signals found for {symbol}")
+                    # Handle 404 responses more gracefully
+                    if response.status_code == 404:
+                        logger.info(f"No trading signals found for {symbol}: {response.status_code}")
+                        try:
+                            error_data = response.json()
+                            logger.info(f"Error message: {error_data.get('message', 'No message')}")
+                        except ValueError:
+                            logger.info(f"Could not parse error response as JSON")
+                            logger.info(f"Response content: {response.text[:200]}...")
+                    else:
+                        logger.error(f"Error retrieving trading signals for {symbol}: {response.status_code}")
+                        if hasattr(response, 'text'):
+                            logger.error(f"Response content: {response.text[:200]}...")
                     return pd.DataFrame()
-            else:
-                logger.error(f"Error retrieving trading signals for {symbol}: {response.status_code} - {response.text}")
+            except requests.exceptions.ConnectionError as conn_e:
+                logger.error(f"Connection error retrieving trading signals for {symbol}: {conn_e}")
+                logger.info("This could indicate that the yfinance-db service is not running or not accessible")
+                # Mark the service as disconnected
+                self.yfinance_db_connected = False
+                return pd.DataFrame()
+            except requests.exceptions.Timeout as timeout_e:
+                logger.error(f"Timeout retrieving trading signals for {symbol}: {timeout_e}")
+                logger.info("This could indicate that the yfinance-db service is running but not responding")
                 return pd.DataFrame()
                 
         except Exception as e:
-            logger.error(f"Error connecting to YFinance DB service: {e}")
+            logger.error(f"Error connecting to YFinance DB service for signals: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return pd.DataFrame()
             
     def get_executed_trades(self, symbol, limit=100):
@@ -101,30 +161,137 @@ class Dashboard:
         Returns:
             DataFrame: DataFrame with executed trades
         """
+        # Check if YFinance DB service is connected
+        if not self.yfinance_db_connected:
+            logger.warning(f"YFinance DB service is not connected. Attempting to reconnect...")
+            if not self.check_yfinance_db_connection():
+                logger.error(f"Failed to connect to YFinance DB service. Cannot retrieve executed trades.")
+                return pd.DataFrame()
+                
+        def _display_connection_status(self):
+            """
+            Display the connection status to the YFinance DB service.
+            """
+            # Create a container for the connection status
+            conn_container = st.container()
+            
+            with conn_container:
+                # Check connection status
+                if self.yfinance_db_connected:
+                    st.success("✅ YFinance DB Service: Connected")
+                else:
+                    st.error("❌ YFinance DB Service: Disconnected")
+                    st.info("Attempting to reconnect... Check logs for details.")
+                    
+                    # Add a button to manually retry connection
+                    if st.button("Retry Connection"):
+                        with st.spinner("Connecting to YFinance DB Service..."):
+                            if self.check_yfinance_db_connection():
+                                st.success("✅ Connection successful!")
+                            else:
+                                st.error("❌ Connection failed. Check logs for details.")
+        def _setup_connection_check_thread(self):
+            """
+            Set up a background thread to periodically check the connection to the YFinance DB service.
+            """
+            import threading
+            
+            def check_connection_periodically():
+                """Background thread function to check connection periodically."""
+                while True:
+                    try:
+                        # Sleep first to allow initial connection attempt to complete
+                        import time
+                        time.sleep(self.connection_check_interval)
+                        
+                        # Check connection
+                        logger.info(f"Performing periodic connection check to YFinance DB service")
+                        was_connected = self.yfinance_db_connected
+                        is_connected = self.check_yfinance_db_connection()
+                        
+                        if not was_connected and is_connected:
+                            logger.info(f"YFinance DB service connection restored")
+                        elif was_connected and not is_connected:
+                            logger.warning(f"YFinance DB service connection lost")
+                    except Exception as e:
+                        logger.error(f"Error in connection check thread: {e}")
+                        import traceback
+                        logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Start the background thread
+            connection_thread = threading.Thread(
+                target=check_connection_periodically,
+                daemon=True  # Make thread a daemon so it exits when the main thread exits
+            )
+            connection_thread.start()
+            logger.info(f"Started background thread for periodic connection checks every {self.connection_check_interval} seconds")
         try:
             url = f"{self.yfinance_db_url}/trades/{symbol}"
             params = {"limit": limit}
             
-            response = requests.get(url, params=params, timeout=10)
+            logger.info(f"Requesting executed trades from: {url} with params: {params}")
             
-            if response.status_code == 200:
-                data = response.json()
-                if data:
-                    df = pd.DataFrame(data)
-                    # Convert timestamp strings to datetime
-                    if 'timestamp' in df.columns:
-                        df['timestamp'] = pd.to_datetime(df['timestamp'])
-                    logger.info(f"Retrieved {len(df)} executed trades for {symbol}")
-                    return df
+            # Use a session for connection pooling and retry mechanism
+            session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(
+                max_retries=3,  # Retry up to 3 times
+                pool_connections=10,
+                pool_maxsize=10
+            )
+            session.mount('http://', adapter)
+            session.mount('https://', adapter)
+            
+            try:
+                response = session.get(url, params=params, timeout=10)
+                
+                logger.info(f"Trades response status code: {response.status_code}")
+                
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        if data:
+                            df = pd.DataFrame(data)
+                            # Convert timestamp strings to datetime
+                            if 'timestamp' in df.columns:
+                                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                            logger.info(f"Retrieved {len(df)} executed trades for {symbol}")
+                            return df
+                        else:
+                            logger.warning(f"No executed trades found for {symbol} (empty response)")
+                            return pd.DataFrame()
+                    except ValueError as json_e:
+                        logger.error(f"Error parsing JSON response for executed trades: {json_e}")
+                        logger.error(f"Response content: {response.text[:200]}...")
+                        return pd.DataFrame()
                 else:
-                    logger.warning(f"No executed trades found for {symbol}")
+                    # Handle 404 responses more gracefully
+                    if response.status_code == 404:
+                        logger.info(f"No executed trades found for {symbol}: {response.status_code}")
+                        try:
+                            error_data = response.json()
+                            logger.info(f"Error message: {error_data.get('message', 'No message')}")
+                        except ValueError:
+                            logger.info(f"Response content: {response.text[:200]}...")
+                    else:
+                        logger.error(f"Error retrieving executed trades for {symbol}: {response.status_code}")
+                        if hasattr(response, 'text'):
+                            logger.error(f"Response content: {response.text[:200]}...")
                     return pd.DataFrame()
-            else:
-                logger.error(f"Error retrieving executed trades for {symbol}: {response.status_code} - {response.text}")
+            except requests.exceptions.ConnectionError as conn_e:
+                logger.error(f"Connection error retrieving executed trades for {symbol}: {conn_e}")
+                logger.info("This could indicate that the yfinance-db service is not running or not accessible")
+                # Mark the service as disconnected
+                self.yfinance_db_connected = False
+                return pd.DataFrame()
+            except requests.exceptions.Timeout as timeout_e:
+                logger.error(f"Timeout retrieving executed trades for {symbol}: {timeout_e}")
+                logger.info("This could indicate that the yfinance-db service is running but not responding")
                 return pd.DataFrame()
                 
         except Exception as e:
-            logger.error(f"Error connecting to YFinance DB service: {e}")
+            logger.error(f"Error connecting to YFinance DB service for trades: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return pd.DataFrame()
             
     def check_yfinance_db_connection(self):
@@ -135,21 +302,108 @@ class Dashboard:
             bool: True if connected, False otherwise
         """
         try:
-            url = f"{self.yfinance_db_url}/health"
-            response = requests.get(url, timeout=5)
+            # Log connection details for debugging
+            logger.info(f"Attempting to connect to YFinance DB service at {self.yfinance_db_url}")
+            logger.info(f"YFinance DB host: {self.yfinance_db_host}, port: {self.yfinance_db_port}")
             
-            if response.status_code == 200:
-                self.yfinance_db_connected = True
-                logger.info("Successfully connected to YFinance DB service")
-                return True
-            else:
+            # Log environment variables
+            import os
+            logger.info(f"Environment variables:")
+            logger.info(f"YFINANCE_DB_HOST: {os.getenv('YFINANCE_DB_HOST', 'not set')}")
+            logger.info(f"YFINANCE_DB_PORT: {os.getenv('YFINANCE_DB_PORT', 'not set')}")
+            
+            # Check if the service is running in Docker
+            is_docker = os.path.exists('/.dockerenv')
+            logger.info(f"Running in Docker container: {is_docker}")
+            
+            # First try the root endpoint to see if the service is running at all
+            root_url = f"{self.yfinance_db_url}/"
+            logger.info(f"Checking root endpoint: {root_url}")
+            
+            # Use a session for connection pooling and retry mechanism
+            session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(
+                max_retries=3,  # Retry up to 3 times
+                pool_connections=10,
+                pool_maxsize=10
+            )
+            session.mount('http://', adapter)
+            session.mount('https://', adapter)
+            
+            try:
+                root_response = session.get(root_url, timeout=5)
+                logger.info(f"Root endpoint response: {root_response.status_code}")
+                if root_response.status_code == 200:
+                    logger.info(f"Root endpoint content: {root_response.text[:200]}...")
+                    # Check if the response is valid JSON
+                    try:
+                        root_data = root_response.json()
+                        logger.info(f"Root endpoint returned valid JSON: {root_data}")
+                    except ValueError:
+                        logger.warning(f"Root endpoint did not return valid JSON: {root_response.text[:200]}")
+            except requests.exceptions.ConnectionError as conn_e:
+                logger.error(f"Connection error to root endpoint: {conn_e}")
+                logger.info("This could indicate that the yfinance-db service is not running or not accessible")
+            except requests.exceptions.Timeout as timeout_e:
+                logger.error(f"Timeout connecting to root endpoint: {timeout_e}")
+                logger.info("This could indicate that the yfinance-db service is running but not responding")
+            except Exception as root_e:
+                logger.error(f"Error connecting to root endpoint: {root_e}")
+            
+            # Now try the health endpoint
+            url = f"{self.yfinance_db_url}/health"
+            logger.info(f"Checking health endpoint: {url}")
+            
+            try:
+                response = session.get(url, timeout=5)
+                
+                if response.status_code == 200:
+                    self.yfinance_db_connected = True
+                    logger.info(f"Successfully connected to YFinance DB service health endpoint")
+                    
+                    # Check if the response is valid JSON
+                    try:
+                        health_data = response.json()
+                        logger.info(f"Health endpoint status: {health_data.get('status', 'unknown')}")
+                        
+                        # Check database status if available
+                        if 'database' in health_data:
+                            db_info = health_data['database']
+                            logger.info(f"Database tables: {db_info.get('tables', [])}")
+                            logger.info(f"Record counts: {db_info.get('record_counts', {})}")
+                            
+                            # Check specifically for trading_signals table
+                            record_counts = db_info.get('record_counts', {})
+                            if 'trading_signals' in record_counts:
+                                logger.info(f"Trading signals count: {record_counts['trading_signals']}")
+                                if record_counts['trading_signals'] == 0:
+                                    logger.warning("Trading signals table exists but has no records!")
+                    except ValueError:
+                        logger.warning(f"Health endpoint did not return valid JSON: {response.text[:200]}")
+                    
+                    return True
+                else:
+                    self.yfinance_db_connected = False
+                    logger.warning(f"YFinance DB service health endpoint returned status code: {response.status_code}")
+                    if hasattr(response, 'text'):
+                        logger.warning(f"Response content: {response.text[:200]}...")
+                    return False
+            except requests.exceptions.ConnectionError as conn_e:
                 self.yfinance_db_connected = False
-                logger.warning(f"YFinance DB service returned status code: {response.status_code}")
+                logger.error(f"Connection error to health endpoint: {conn_e}")
+                logger.info("This could indicate that the yfinance-db service is not running or not accessible")
+                return False
+            except requests.exceptions.Timeout as timeout_e:
+                self.yfinance_db_connected = False
+                logger.error(f"Timeout connecting to health endpoint: {timeout_e}")
+                logger.info("This could indicate that the yfinance-db service is running but not responding")
                 return False
                 
         except Exception as e:
             self.yfinance_db_connected = False
-            logger.error(f"Error connecting to YFinance DB service: {e}")
+            logger.error(f"Error connecting to YFinance DB service health endpoint: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
             
     def refresh_account_data(self):
@@ -189,6 +443,9 @@ class Dashboard:
 
         # Main content
         st.title("Alpaca Trading Bot Dashboard")
+        
+        # Display connection status
+        self._display_connection_status()
         
         # Display market status
         self._display_market_status()

@@ -17,6 +17,7 @@ services:
       - MAX_DB_SIZE_GB=${MAX_DB_SIZE_GB:-10}
       - FETCH_INTERVAL_MINUTES=${FETCH_INTERVAL_MINUTES:-60}
       - SYMBOLS=${SYMBOLS:-AAPL,MSFT,AMZN,GOOGL,META}
+      - INIT_SAMPLE_DATA=true
       - TZ=America/New_York
     env_file:
       - .env
@@ -62,6 +63,8 @@ services:
       - ALPACA_API_SECRET=${ALPACA_API_SECRET}
       - ALPACA_BASE_URL=${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
       - ALPACA_DATA_URL=${ALPACA_DATA_URL:-https://data.alpaca.markets}
+      - YFINANCE_DB_HOST=yfinance-db
+      - YFINANCE_DB_PORT=8001
       - TZ=America/New_York
     env_file:
       - .env
