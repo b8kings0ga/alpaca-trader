@@ -274,28 +274,34 @@ class YFinanceDBClient:
         logger.info(f"Retrieved {len(positions)} positions")
         
         # Calculate portfolio value based on positions
-        portfolio_value = 100000.0  # Base value
+        base_cash = 100000.0  # Base cash value
         position_value = 0.0
         
-        logger.info(f"Starting with base portfolio value: ${portfolio_value:.2f}")
+        logger.info(f"Starting with base cash value: ${base_cash:.2f}")
         
         for position in positions:
-            logger.info(f"Position {position.symbol}: market_value=${position.market_value:.2f}")
-            position_value += position.market_value
+            position_market_value = float(position.market_value) if hasattr(position, 'market_value') else 0.0
+            logger.info(f"Position {position.symbol}: market_value=${position_market_value:.2f}")
+            position_value += position_market_value
         
         logger.info(f"Total position value: ${position_value:.2f}")
-        total_value = portfolio_value + position_value
-        logger.info(f"Total portfolio value: ${total_value:.2f}")
+        total_equity = base_cash + position_value
+        logger.info(f"Total portfolio equity: ${total_equity:.2f}")
         
         # Return account data with consistent dictionary structure
         account_dict = {
-            'equity': total_value,
-            'cash': portfolio_value,
-            'buying_power': portfolio_value,
-            'portfolio_value': total_value
+            'equity': total_equity,
+            'cash': base_cash - (position_value * 0.5),  # Assume 50% of position value came from cash
+            'buying_power': (base_cash - (position_value * 0.5)) * 2,  # Typically 2x cash for margin accounts
+            'portfolio_value': total_equity,
+            'initial_margin': position_value * 0.5,  # Assume 50% margin requirement
+            'maintenance_margin': position_value * 0.25,  # Typically 25% of position value
+            'multiplier': 2,  # Margin multiplier
+            'status': 'ACTIVE',
+            'timestamp': datetime.now().isoformat()
         }
         
-        logger.debug(f"Simulated account data: {account_dict}")
+        logger.info(f"Simulated account data: equity=${account_dict['equity']:.2f}, cash=${account_dict['cash']:.2f}, buying_power=${account_dict['buying_power']:.2f}")
         return account_dict
     
     def get_recent_data(self, symbols, minutes=15, interval="1m"):
@@ -327,9 +333,10 @@ class YFinanceDBClient:
                 url = f"{self.base_url}/data/{symbol}"
                 params = {
                     # Use required_data_points instead of minutes to ensure we get enough data
-                    "limit": required_data_points * 5  # Multiply by 5 to ensure we get enough data
+                    "limit": required_data_points * 50  # Multiply by 50 to ensure we get enough data for signal generation
                 }
                 
+                logger.info(f"Requesting {params['limit']} data points for {symbol} from YFinance DB Service")
                 response = requests.get(url, params=params)
                 
                 if response.status_code == 200:
@@ -460,8 +467,15 @@ class YFinanceDBClient:
                         current_price = data[0]['close']
                         logger.info(f"Current price for {symbol}: ${current_price:.2f}")
                         
-                        qty = 10  # Simulated quantity
-                        avg_entry_price = current_price * 0.95  # Simulated entry price (5% below current)
+                        # Create more varied and realistic positions
+                        # Use symbol hash to create deterministic but varied quantities
+                        symbol_hash = sum(ord(c) for c in symbol)
+                        qty = 10 + (symbol_hash % 90)  # Between 10 and 100 shares
+                        
+                        # Vary entry prices to simulate different purchase times
+                        entry_factor = 0.90 + ((symbol_hash % 15) / 100)  # Between 0.90 and 1.05
+                        avg_entry_price = current_price * entry_factor
+                        
                         market_value = qty * current_price
                         unrealized_pl = qty * (current_price - avg_entry_price)
                         

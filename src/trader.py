@@ -213,16 +213,40 @@ class Trader:
                 
             # Execute both buy and sell actions regardless of signal change
             # This ensures we don't miss any trading opportunities
-            if action == 'buy' and not signal_changed:
-                logger.info(f"Buy signal for {symbol} hasn't changed, but executing anyway")
+            # Always execute signals regardless of whether they've changed
+            if action == 'buy':
+                logger.info(f"Processing buy signal for {symbol} (signal_changed: {signal_changed})")
                 
             logger.info(f"Processing {action} signal for {symbol} (signal_changed: {signal_changed})")
                 
             try:
                 if action == 'buy':
-                    # Skip if we already have a position
+                    # Check if we already have a position, but don't skip - update it if needed
                     if symbol in current_positions:
-                        logger.info(f"Already have position in {symbol}, skipping buy")
+                        position = current_positions[symbol]
+                        current_qty = abs(int(position.qty))
+                        logger.info(f"Already have position in {symbol} with {current_qty} shares, evaluating if adjustment needed")
+                        
+                        # If signal has changed, we might want to increase our position
+                        if signal_changed:
+                            # Calculate additional quantity to buy
+                            additional_qty = int(position_value / price) - current_qty
+                            if additional_qty > 0:
+                                logger.info(f"Increasing position in {symbol} by {additional_qty} shares")
+                                try:
+                                    order = self.api.submit_order(
+                                        symbol=symbol,
+                                        qty=additional_qty,
+                                        side='buy',
+                                        type='market',
+                                        time_in_force='day'
+                                    )
+                                    logger.info(f"Additional buy order placed for {additional_qty} shares of {symbol} at ~${price:.2f}")
+                                    executed_orders.append(self._format_order(order))
+                                except Exception as e:
+                                    logger.error(f"Error placing additional buy order for {symbol}: {e}")
+                        else:
+                            logger.info(f"Signal hasn't changed for {symbol}, maintaining current position")
                         continue
                         
                     # Calculate quantity based on position size and current price

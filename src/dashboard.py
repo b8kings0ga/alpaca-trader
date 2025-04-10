@@ -159,9 +159,19 @@ class Dashboard:
         try:
             self.account_info = self.market_data.get_account()
             self.positions = self.market_data.get_positions()
-            logger.info("Account data refreshed successfully")
+            logger.info(f"Account data refreshed successfully: equity=${float(self.account_info.get('equity', 0)):.2f}")
+            logger.info(f"Retrieved {len(self.positions)} positions")
+            
+            # Log position details for debugging
+            for position in self.positions:
+                symbol = position.symbol if hasattr(position, 'symbol') else 'Unknown'
+                qty = position.qty if hasattr(position, 'qty') else 0
+                value = position.market_value if hasattr(position, 'market_value') else 0
+                logger.info(f"Position: {symbol}, Qty: {qty}, Value: ${float(value):.2f}")
         except Exception as e:
             logger.error(f"Error refreshing account data: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
     def run(self):
         """
