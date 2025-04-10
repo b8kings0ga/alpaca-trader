@@ -364,10 +364,20 @@ class YFinanceData:
             logger.error(f"Error storing signal for {symbol}: {e}")
     
     def get_account(self):
-        """Get mock account information."""
+        """
+        Get mock account information.
+        
+        Returns:
+            dict: Account information with keys 'equity', 'cash', 'buying_power', 'portfolio_value'
+        """
+        logger.info("YFinanceData.get_account() - Providing mock account data")
+        
+        # Always return a dictionary with consistent keys
         return {
-            'equity': 100000.0, 'cash': 100000.0,
-            'buying_power': 100000.0, 'portfolio_value': 100000.0
+            'equity': 100000.0,
+            'cash': 100000.0,
+            'buying_power': 100000.0,
+            'portfolio_value': 100000.0
         }
     
     def get_positions(self):

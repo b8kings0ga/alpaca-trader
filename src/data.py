@@ -181,19 +181,29 @@ class MarketData:
         Get account information.
         
         Returns:
-            dict: Account information
+            dict: Account information with keys 'equity', 'cash', 'buying_power', 'portfolio_value'
         """
         try:
             account = self.api.get_account()
-            return {
+            logger.info(f"MarketData.get_account() - Retrieved account info from Alpaca API")
+            logger.debug(f"Account type: {type(account)}")
+            
+            # Always return a dictionary with consistent keys
+            account_dict = {
                 'equity': float(account.equity),
                 'cash': float(account.cash),
                 'buying_power': float(account.buying_power),
                 'portfolio_value': float(account.portfolio_value)
             }
+            return account_dict
         except Exception as e:
             logger.error(f"Error fetching account: {e}")
-            return {}
+            return {
+                'equity': 0.0,
+                'cash': 0.0,
+                'buying_power': 0.0,
+                'portfolio_value': 0.0
+            }
 
     def get_positions(self):
         """

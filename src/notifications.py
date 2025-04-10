@@ -158,23 +158,53 @@ Time: {order['created_at']}
         # Format positions
         positions_str = ""
         for pos in positions:
+            # Handle both dictionary and namedtuple positions
+            try:
+                # Try dictionary access first
+                symbol = pos['symbol']
+                qty = pos['qty']
+                market_value = float(pos['market_value'])
+                avg_entry_price = float(pos['avg_entry_price'])
+                current_price = float(pos['current_price'])
+                unrealized_pl = float(pos['unrealized_pl'])
+            except (TypeError, KeyError):
+                # Fall back to attribute access for namedtuples
+                symbol = pos.symbol
+                qty = pos.qty
+                market_value = float(pos.market_value)
+                avg_entry_price = float(pos.avg_entry_price)
+                current_price = float(pos.current_price)
+                unrealized_pl = float(pos.unrealized_pl)
+                
             positions_str += f"""
-Symbol: {pos['symbol']}
-Quantity: {pos['qty']}
-Market Value: ${float(pos['market_value']):.2f}
-Avg Entry: ${float(pos['avg_entry_price']):.2f}
-Current Price: ${float(pos['current_price']):.2f}
-Unrealized P/L: ${float(pos['unrealized_pl']):.2f}
+Symbol: {symbol}
+Quantity: {qty}
+Market Value: ${market_value:.2f}
+Avg Entry: ${avg_entry_price:.2f}
+Current Price: ${current_price:.2f}
+Unrealized P/L: ${unrealized_pl:.2f}
 -------------------"""
         
         if not positions_str:
             positions_str = "No open positions"
             
+        # Handle both dictionary and object account_info
+        try:
+            # Try dictionary access first
+            equity = float(account_info['equity'])
+            cash = float(account_info['cash'])
+            buying_power = float(account_info['buying_power'])
+        except (TypeError, KeyError):
+            # Fall back to attribute access
+            equity = float(account_info.equity)
+            cash = float(account_info.cash)
+            buying_power = float(account_info.buying_power)
+            
         message = f"""
 Portfolio Status:
-Equity: ${float(account_info['equity']):.2f}
-Cash: ${float(account_info['cash']):.2f}
-Buying Power: ${float(account_info['buying_power']):.2f}
+Equity: ${equity:.2f}
+Cash: ${cash:.2f}
+Buying Power: ${buying_power:.2f}
 
 Positions:
 {positions_str}

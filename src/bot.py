@@ -114,6 +114,8 @@ class AlpacaBot:
             
             # Get account information
             account_info = self.market_data.get_account()
+            
+            # All data source classes now return a consistent dictionary
             logger.info(f"Account equity: ${float(account_info.get('equity', 0)):.2f}")
             
             # Get current positions
@@ -179,6 +181,9 @@ class AlpacaBot:
             # Update positions after trading
             updated_positions = self.market_data.get_positions()
             updated_account = self.market_data.get_account()
+            
+            # Log updated account information
+            logger.info(f"Updated account equity: ${float(updated_account.get('equity', 0)):.2f}")
             
             # Send portfolio status notification
             self.notification.notify_portfolio_status(updated_account, updated_positions)

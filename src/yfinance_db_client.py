@@ -23,6 +23,7 @@ class YFinanceDBClient:
             host: Hostname of the YFinance Data Service
             port: Port of the YFinance Data Service
         """
+        # Use localhost instead of yfinance-db to ensure we can connect to the service
         self.host = host or os.getenv("YFINANCE_DB_HOST", "localhost")
         self.port = port or int(os.getenv("YFINANCE_DB_PORT", "8001"))
         self.base_url = f"http://{self.host}:{self.port}"
@@ -141,6 +142,19 @@ class YFinanceDBClient:
             bool: True if the service is available, False otherwise
         """
         try:
+            # Try to connect to localhost first, then fall back to the configured host
+            try:
+                response = requests.get("http://localhost:8001/", timeout=5)
+                if response.status_code == 200:
+                    logger.info("Successfully connected to YFinance Data Service on localhost")
+                    # Update the base_url to use localhost
+                    self.host = "localhost"
+                    self.base_url = f"http://{self.host}:{self.port}"
+                    return True
+            except Exception as e:
+                logger.warning(f"Could not connect to YFinance Data Service on localhost: {e}")
+                
+            # Try the configured host
             url = f"{self.base_url}/"
             response = requests.get(url, timeout=5)
             
@@ -162,8 +176,42 @@ class YFinanceDBClient:
         Returns:
             bool: True if market is open, False otherwise
         """
-        logger.info("YFinanceDBClient.is_market_open() was called but is not implemented")
-        # For now, return a default value to avoid errors
+        from config import config
+        
+        # Check if we should use real market status from Alpaca API
+        if config.USE_REAL_POSITIONS:
+            try:
+                logger.info("YFinanceDBClient.is_market_open() - Checking real market status from Alpaca API")
+                
+                # Initialize Alpaca API client
+                import alpaca_trade_api as tradeapi
+                
+                # Remove trailing /v2 from base URL if present to avoid duplicate version in path
+                base_url = config.ALPACA_BASE_URL
+                if base_url.endswith('/v2'):
+                    base_url = base_url[:-3]
+                
+                api = tradeapi.REST(
+                    config.ALPACA_API_KEY,
+                    config.ALPACA_API_SECRET,
+                    base_url,
+                    api_version='v2'
+                )
+                
+                # Get real market status from Alpaca API
+                clock = api.get_clock()
+                is_open = clock.is_open
+                logger.info(f"Market is {'open' if is_open else 'closed'} according to Alpaca API")
+                return is_open
+                
+            except Exception as e:
+                logger.error(f"Error checking market status from Alpaca API: {e}")
+                logger.warning("Falling back to simulated market status")
+                # Fall back to simulated market status if there's an error
+        
+        # Provide simulated market status
+        logger.info("YFinanceDBClient.is_market_open() - Providing simulated market status")
+        # For testing purposes, always return True
         return True
         
     def get_account(self):
@@ -171,29 +219,84 @@ class YFinanceDBClient:
         Get account information.
         
         Returns:
-            dict: Account information
+            dict: Account information with keys 'equity', 'cash', 'buying_power', 'portfolio_value'
+                 Always returns a dictionary regardless of whether real or simulated data is used.
         """
+        logger.info("YFinanceDBClient.get_account() was called")
+        from config import config
+        
+        # Check if we should use real account info from Alpaca API
+        if config.USE_REAL_POSITIONS:
+            try:
+                logger.info("YFinanceDBClient.get_account() - Using real account info from Alpaca API")
+                
+                # Initialize Alpaca API client
+                import alpaca_trade_api as tradeapi
+                
+                # Remove trailing /v2 from base URL if present to avoid duplicate version in path
+                base_url = config.ALPACA_BASE_URL
+                if base_url.endswith('/v2'):
+                    base_url = base_url[:-3]
+                
+                api = tradeapi.REST(
+                    config.ALPACA_API_KEY,
+                    config.ALPACA_API_SECRET,
+                    base_url,
+                    api_version='v2'
+                )
+                
+                # Get real account info from Alpaca API
+                account = api.get_account()
+                logger.info(f"Retrieved real account info from Alpaca API: Equity=${float(account.equity):.2f}")
+                logger.info(f"Account type: {type(account)}")
+                
+                # Convert Account object to dictionary for consistency
+                account_dict = {
+                    'equity': float(account.equity),
+                    'cash': float(account.cash),
+                    'buying_power': float(account.buying_power),
+                    'portfolio_value': float(account.portfolio_value)
+                }
+                logger.info(f"Converted Account object to dictionary")
+                return account_dict
+                
+            except Exception as e:
+                logger.error(f"Error getting real account info from Alpaca API: {e}")
+                logger.warning("Falling back to simulated account info")
+                # Fall back to simulated account info if there's an error
+        
+        # Provide simulated account info
         logger.info("YFinanceDBClient.get_account() - Providing simulated account data")
         
         # Get current positions to calculate portfolio value
+        logger.info("Fetching positions to calculate portfolio value")
         positions = self.get_positions()
+        logger.info(f"Retrieved {len(positions)} positions")
         
         # Calculate portfolio value based on positions
         portfolio_value = 100000.0  # Base value
         position_value = 0.0
         
+        logger.info(f"Starting with base portfolio value: ${portfolio_value:.2f}")
+        
         for position in positions:
+            logger.info(f"Position {position.symbol}: market_value=${position.market_value:.2f}")
             position_value += position.market_value
         
+        logger.info(f"Total position value: ${position_value:.2f}")
         total_value = portfolio_value + position_value
+        logger.info(f"Total portfolio value: ${total_value:.2f}")
         
-        # Return account data
-        return {
+        # Return account data with consistent dictionary structure
+        account_dict = {
             'equity': total_value,
             'cash': portfolio_value,
             'buying_power': portfolio_value,
             'portfolio_value': total_value
         }
+        
+        logger.debug(f"Simulated account data: {account_dict}")
+        return account_dict
     
     def get_recent_data(self, symbols, minutes=15, interval="1m"):
         """
@@ -214,6 +317,7 @@ class YFinanceDBClient:
         from config import config
         required_data_points = max(config.LONG_WINDOW, config.SHORT_WINDOW) + 10  # Add buffer
         logger.info(f"Required data points for strategy: {required_data_points}")
+        logger.info(f"LONG_WINDOW: {config.LONG_WINDOW}, SHORT_WINDOW: {config.SHORT_WINDOW}")
         
         data = {}
         
@@ -223,7 +327,7 @@ class YFinanceDBClient:
                 url = f"{self.base_url}/data/{symbol}"
                 params = {
                     # Use required_data_points instead of minutes to ensure we get enough data
-                    "limit": required_data_points
+                    "limit": required_data_points * 5  # Multiply by 5 to ensure we get enough data
                 }
                 
                 response = requests.get(url, params=params)
@@ -294,6 +398,40 @@ class YFinanceDBClient:
         Returns:
             list: List of positions
         """
+        logger.info("YFinanceDBClient.get_positions() was called")
+        from config import config
+        
+        # Check if we should use real positions from Alpaca API
+        if config.USE_REAL_POSITIONS:
+            try:
+                logger.info("YFinanceDBClient.get_positions() - Using real positions from Alpaca API")
+                
+                # Initialize Alpaca API client
+                import alpaca_trade_api as tradeapi
+                
+                # Remove trailing /v2 from base URL if present to avoid duplicate version in path
+                base_url = config.ALPACA_BASE_URL
+                if base_url.endswith('/v2'):
+                    base_url = base_url[:-3]
+                
+                api = tradeapi.REST(
+                    config.ALPACA_API_KEY,
+                    config.ALPACA_API_SECRET,
+                    base_url,
+                    api_version='v2'
+                )
+                
+                # Get real positions from Alpaca API
+                positions = api.list_positions()
+                logger.info(f"Retrieved {len(positions)} real positions from Alpaca API")
+                return positions
+                
+            except Exception as e:
+                logger.error(f"Error getting real positions from Alpaca API: {e}")
+                logger.warning("Falling back to simulated positions")
+                # Fall back to simulated positions if there's an error
+        
+        # Provide simulated positions
         logger.info("YFinanceDBClient.get_positions() - Providing simulated position data")
         
         # Create a Position class to mimic Alpaca's Position object
@@ -301,25 +439,33 @@ class YFinanceDBClient:
         Position = namedtuple('Position', ['symbol', 'qty', 'market_value', 'avg_entry_price', 'current_price', 'unrealized_pl'])
         
         positions = []
+        logger.info(f"Using symbols from config: {config.SYMBOLS}")
         
         # Get current prices for symbols
-        for symbol in ['AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META']:
+        for symbol in config.SYMBOLS:
             try:
                 # Try to get recent data for this symbol
                 url = f"{self.base_url}/data/{symbol}"
                 params = {"limit": 1}
                 
+                logger.info(f"Fetching data for simulated position: {url} with params {params}")
                 response = requests.get(url, params=params)
                 
+                logger.info(f"Response status code: {response.status_code}")
                 if response.status_code == 200:
                     data = response.json()
+                    logger.info(f"Data received for {symbol}: {len(data)} records")
                     if data and len(data) > 0:
                         # Create a simulated position
                         current_price = data[0]['close']
+                        logger.info(f"Current price for {symbol}: ${current_price:.2f}")
+                        
                         qty = 10  # Simulated quantity
                         avg_entry_price = current_price * 0.95  # Simulated entry price (5% below current)
                         market_value = qty * current_price
                         unrealized_pl = qty * (current_price - avg_entry_price)
+                        
+                        logger.info(f"Creating position with qty={qty}, avg_entry_price=${avg_entry_price:.2f}, market_value=${market_value:.2f}, unrealized_pl=${unrealized_pl:.2f}")
                         
                         position = Position(
                             symbol=symbol,
@@ -332,6 +478,8 @@ class YFinanceDBClient:
                         
                         positions.append(position)
                         logger.info(f"Created simulated position for {symbol}: {qty} shares at ${current_price:.2f}")
+                    else:
+                        logger.warning(f"No data available for {symbol} to create simulated position")
             except Exception as e:
                 logger.error(f"Error creating simulated position for {symbol}: {e}")
         
@@ -345,8 +493,46 @@ class YFinanceDBClient:
         Returns:
             tuple: (market_open, market_close) datetime objects
         """
-        logger.info("YFinanceDBClient.get_market_hours() was called but is not implemented")
-        # For now, return default values to avoid errors
+        from config import config
+        
+        # Check if we should use real market hours from Alpaca API
+        if config.USE_REAL_POSITIONS:
+            try:
+                logger.info("YFinanceDBClient.get_market_hours() - Getting real market hours from Alpaca API")
+                
+                # Initialize Alpaca API client
+                import alpaca_trade_api as tradeapi
+                
+                # Remove trailing /v2 from base URL if present to avoid duplicate version in path
+                base_url = config.ALPACA_BASE_URL
+                if base_url.endswith('/v2'):
+                    base_url = base_url[:-3]
+                
+                api = tradeapi.REST(
+                    config.ALPACA_API_KEY,
+                    config.ALPACA_API_SECRET,
+                    base_url,
+                    api_version='v2'
+                )
+                
+                # Get real market hours from Alpaca API
+                calendar = api.get_calendar(start=datetime.now().strftime('%Y-%m-%d'), end=datetime.now().strftime('%Y-%m-%d'))
+                if calendar:
+                    market_open = calendar[0].open
+                    market_close = calendar[0].close
+                    logger.info(f"Market hours from Alpaca API: Open={market_open}, Close={market_close}")
+                    return (market_open, market_close)
+                else:
+                    logger.warning("No calendar data returned from Alpaca API")
+                    # Fall back to simulated market hours
+                
+            except Exception as e:
+                logger.error(f"Error getting market hours from Alpaca API: {e}")
+                logger.warning("Falling back to simulated market hours")
+                # Fall back to simulated market hours if there's an error
+        
+        # Provide simulated market hours
+        logger.info("YFinanceDBClient.get_market_hours() - Providing simulated market hours")
         now = datetime.now()
         today = now.date()
         open_time = datetime.combine(today, datetime.min.time().replace(hour=9, minute=30))

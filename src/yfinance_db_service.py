@@ -36,9 +36,10 @@ app = FastAPI(title="YFinance Data Service", description="Service for fetching a
 
 # Configuration from environment variables
 MAX_DB_SIZE_GB = float(os.getenv("MAX_DB_SIZE_GB", "10"))  # Maximum database size in GB
-FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", "60"))  # How often to fetch data
-SYMBOLS = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOGL,META").split(",")  # Symbols to fetch
+FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", "5"))  # How often to fetch data (reduced to 5 minutes)
+SYMBOLS = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOGL,META,TSLA,NVDA").split(",")  # Symbols to fetch (added TSLA and NVDA)
 DB_PATH = os.getenv("DB_PATH", "data/market_data.db")  # Database path
+DEFAULT_INTERVAL = os.getenv("DEFAULT_INTERVAL", "1m")  # Default interval for data (set to 1m for minute-level data)
 
 # Create necessary directories
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -68,24 +69,29 @@ class YFinanceDataService:
         logger.info(f"YFinanceDataService initialized with database at {db_path}")
         
     def _ensure_db_exists(self):
-        """Ensure the database directory and file exist."""
+        """Ensure the database directory and file exist with all required tables."""
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        
+        # Market data table - optimized for minute-level data
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS market_data (
-            symbol TEXT, 
-            timestamp TEXT, 
-            open REAL, 
-            high REAL, 
+            symbol TEXT,
+            timestamp TEXT,
+            open REAL,
+            high REAL,
             low REAL,
-            close REAL, 
-            volume INTEGER, 
-            sma_short REAL, 
-            sma_long REAL, 
+            close REAL,
+            volume INTEGER,
+            sma_short REAL,
+            sma_long REAL,
             rsi REAL,
-            PRIMARY KEY (symbol, timestamp)
+            interval TEXT,
+            PRIMARY KEY (symbol, timestamp, interval)
         )''')
+        
+        # Metadata table
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS data_metadata (
             id INTEGER PRIMARY KEY,
@@ -93,11 +99,46 @@ class YFinanceDataService:
             total_records INTEGER,
             db_size_bytes INTEGER
         )''')
+        
+        # Trading signals table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS trading_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            timestamp TEXT,
+            action TEXT,
+            signal REAL,
+            signal_changed BOOLEAN,
+            price REAL,
+            short_ma REAL,
+            long_ma REAL,
+            rsi REAL,
+            interval TEXT,
+            strategy TEXT,
+            UNIQUE(symbol, timestamp, strategy)
+        )''')
+        
+        # Executed trades table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS executed_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id TEXT,
+            symbol TEXT,
+            timestamp TEXT,
+            side TEXT,
+            quantity REAL,
+            price REAL,
+            status TEXT,
+            signal_id INTEGER,
+            FOREIGN KEY(signal_id) REFERENCES trading_signals(id)
+        )''')
+        
         conn.commit()
         conn.close()
         logger.info("Database tables created if they didn't exist")
+        logger.info("Database schema includes tables for market data, signals, and trades")
         
-    def fetch_and_store_data(self, symbols: List[str], period: str = "1d", interval: str = "1m"):
+    def fetch_and_store_data(self, symbols: List[str], period: str = "7d", interval: str = DEFAULT_INTERVAL):
         """
         Fetch data from Yahoo Finance and store it in the database.
         
@@ -114,18 +155,18 @@ class YFinanceDataService:
                 # Fetch data from Yahoo Finance
                 ticker = yf.Ticker(symbol)
                 
-                # For minute data, we need to be careful about Yahoo Finance's limitations
+                # Optimize for minute-level data
                 if interval.endswith('m'):
                     # Yahoo Finance only allows 7 days of minute data
-                    if period == "1d":
-                        # Fetch more data for 1-minute intervals to ensure we have enough for strategies
-                        logger.info(f"Fetching 7 days of minute data for {symbol} instead of 1 day to ensure sufficient data points")
-                        df = ticker.history(period="7d", interval=interval)
-                    else:
-                        df = ticker.history(period="7d", interval=interval)
+                    # Always use 7d for minute data to maximize the amount of data we get
+                    logger.info(f"Fetching 7 days of minute data for {symbol}")
+                    df = ticker.history(period="7d", interval=interval)
+                    
+                    # Check if we got enough data
+                    if len(df) < 100:  # Arbitrary threshold for "enough" data
+                        logger.warning(f"Only got {len(df)} minute-level data points for {symbol}, which may not be enough")
                 else:
                     # For daily data, we can fetch more history
-                    # Use a longer period to ensure we have enough data for strategies
                     logger.info(f"Fetching data for {symbol} with period={period}, interval={interval}")
                     df = ticker.history(period=period, interval=interval)
                 
@@ -227,10 +268,15 @@ class YFinanceDataService:
             
         return df
         
-    def _store_market_data(self, symbol, df):
+    def _store_market_data(self, symbol, df, interval=DEFAULT_INTERVAL):
         """
         Store market data in the SQLite database.
         
+        Args:
+            symbol: Stock symbol
+            df: DataFrame with market data
+            interval: Data interval (1m, 5m, 1h, 1d, etc.)
+            
         Returns:
             int: Number of records added
         """
@@ -265,6 +311,11 @@ class YFinanceDataService:
                 
             # Add symbol column
             df_to_store['symbol'] = symbol
+            
+            # Add interval column
+            df_to_store['interval'] = interval
+            
+            logger.info(f"Storing {len(df_to_store)} records for {symbol} with interval {interval}")
             
             # Ensure all required columns exist
             required_columns = ['symbol', 'timestamp', 'open', 'high', 'low', 'close',
@@ -498,16 +549,51 @@ class YFinanceDataService:
                     inf_count = np.isinf(df[col]).sum()
                     if inf_count > 0:
                         logger.warning(f"Column '{col}' has {inf_count} Infinity values for {symbol}")
-                
-                logger.info(f"Retrieved {len(df)} rows of data for {symbol}")
+                        
                 return df
-            else:
-                logger.warning(f"No data found for {symbol}")
-                return pd.DataFrame()
-                
         except Exception as e:
             logger.error(f"Error retrieving data for {symbol}: {e}")
             return pd.DataFrame()
+            
+    # Methods for trading signals and trades are now implemented as API endpoints
+            try:
+                conn = sqlite3.connect(self.db_path)
+                
+                query = "SELECT * FROM trading_signals"
+                params = []
+                
+                if symbol:
+                    query += " WHERE symbol = ?"
+                    params.append(symbol)
+                    
+                query += " ORDER BY timestamp DESC LIMIT ?"
+                params.append(limit)
+                
+                df = pd.read_sql_query(query, conn, params=params)
+                conn.close()
+                
+                if not df.empty:
+                    # Convert timestamp strings to datetime
+                    df['timestamp'] = pd.to_datetime(df['timestamp'])
+                    
+                return df
+                
+            except Exception as e:
+                logger.error(f"Error getting trading signals: {e}")
+                return pd.DataFrame()
+                
+        def get_executed_trades(self, symbol=None, limit=100):
+            """
+            Get executed trades from the database.
+            
+            Args:
+                symbol: Stock symbol (optional)
+                limit: Maximum number of trades to return
+                
+            Returns:
+                DataFrame: DataFrame with executed trades
+            """
+            return pd.DataFrame()  # Placeholder
             
     def get_database_stats(self):
         """Get statistics about the database."""
@@ -695,6 +781,167 @@ async def fetch_data(symbols: Optional[List[str]] = None,
         "records_added": records_added,
         "symbols": symbols
     }
+
+# API endpoints for trading signals and trades
+@app.post("/signals")
+async def store_signal(symbol: str,
+                      action: str,
+                      price: float,
+                      signal_value: float = 0,
+                      signal_changed: bool = False,
+                      short_ma: Optional[float] = None,
+                      long_ma: Optional[float] = None,
+                      rsi: Optional[float] = None,
+                      strategy: str = "default"):
+    """Store a trading signal in the database."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Insert signal into database
+        timestamp = datetime.now().isoformat()
+        interval = DEFAULT_INTERVAL
+        
+        cursor.execute('''
+        INSERT OR REPLACE INTO trading_signals
+        (symbol, timestamp, action, signal, signal_changed, price, short_ma, long_ma, rsi, interval, strategy)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            symbol, timestamp, action, signal_value, signal_changed, price,
+            short_ma, long_ma, rsi, interval, strategy
+        ))
+        
+        conn.commit()
+        signal_id = cursor.lastrowid
+        conn.close()
+        
+        logger.info(f"Stored trading signal for {symbol}: {action} (ID: {signal_id})")
+        return {"id": signal_id, "message": f"Signal stored for {symbol}"}
+        
+    except Exception as e:
+        logger.error(f"Error storing trading signal for {symbol}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"Error storing signal: {str(e)}"}
+        )
+
+@app.post("/trades")
+async def store_trade(order_id: str,
+                     symbol: str,
+                     side: str,
+                     quantity: float,
+                     price: float,
+                     status: str,
+                     signal_id: Optional[int] = None):
+    """Store an executed trade in the database."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Insert trade into database
+        timestamp = datetime.now().isoformat()
+        
+        cursor.execute('''
+        INSERT INTO executed_trades
+        (order_id, symbol, timestamp, side, quantity, price, status, signal_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            order_id, symbol, timestamp, side, quantity, price, status, signal_id
+        ))
+        
+        conn.commit()
+        trade_id = cursor.lastrowid
+        conn.close()
+        
+        logger.info(f"Stored executed trade for {symbol}: {side} {quantity} shares at ${price:.2f} (ID: {trade_id})")
+        return {"id": trade_id, "message": f"Trade stored for {symbol}"}
+        
+    except Exception as e:
+        logger.error(f"Error storing executed trade: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"Error storing trade: {str(e)}"}
+        )
+
+@app.get("/signals/{symbol}")
+async def get_signals(symbol: str, limit: int = 100):
+    """Get trading signals for a symbol."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        
+        query = "SELECT * FROM trading_signals WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?"
+        params = [symbol, limit]
+        
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        
+        if df.empty:
+            return JSONResponse(
+                status_code=404,
+                content={"message": f"No signals found for {symbol}"}
+            )
+        
+        # Convert DataFrame to a safe format for JSON serialization
+        safe_records = []
+        for _, row in df.iterrows():
+            safe_record = {}
+            for col, val in row.items():
+                if pd.isna(val):
+                    safe_record[col] = None
+                elif isinstance(val, (pd.Timestamp, datetime)):
+                    safe_record[col] = val.isoformat()
+                else:
+                    safe_record[col] = val
+            safe_records.append(safe_record)
+        
+        return JSONResponse(content=safe_records)
+        
+    except Exception as e:
+        logger.error(f"Error getting trading signals for {symbol}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"Error getting signals: {str(e)}"}
+        )
+
+@app.get("/trades/{symbol}")
+async def get_trades(symbol: str, limit: int = 100):
+    """Get executed trades for a symbol."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        
+        query = "SELECT * FROM executed_trades WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?"
+        params = [symbol, limit]
+        
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        
+        if df.empty:
+            return JSONResponse(
+                status_code=404,
+                content={"message": f"No trades found for {symbol}"}
+            )
+        
+        # Convert DataFrame to a safe format for JSON serialization
+        safe_records = []
+        for _, row in df.iterrows():
+            safe_record = {}
+            for col, val in row.items():
+                if pd.isna(val):
+                    safe_record[col] = None
+                elif isinstance(val, (pd.Timestamp, datetime)):
+                    safe_record[col] = val.isoformat()
+                else:
+                    safe_record[col] = val
+            safe_records.append(safe_record)
+        
+        return JSONResponse(content=safe_records)
+        
+    except Exception as e:
+        logger.error(f"Error getting executed trades for {symbol}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"Error getting trades: {str(e)}"}
+        )
 
 # Scheduler for periodic data fetching
 scheduler = BackgroundScheduler()

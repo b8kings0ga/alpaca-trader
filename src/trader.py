@@ -1,13 +1,20 @@
 """
 Order execution for the Alpaca Trading Bot.
 """
+import os
 import alpaca_trade_api as tradeapi
+import requests
 from config import config
 from src.logger import get_logger
+from datetime import datetime
 
 logger = get_logger()
 
 class Trader:
+    # YFinance DB service URL
+    YFINANCE_DB_HOST = os.getenv("YFINANCE_DB_HOST", "localhost")
+    YFINANCE_DB_PORT = int(os.getenv("YFINANCE_DB_PORT", "8001"))
+    YFINANCE_DB_URL = f"http://{YFINANCE_DB_HOST}:{YFINANCE_DB_PORT}"
     """
     Class for executing trades with Alpaca.
     """
@@ -156,6 +163,10 @@ class Trader:
                         continue
                         
                     try:
+                        # Store the signal in the database
+                        signal_id = self.store_signal(symbol, signal_data)
+                        
+                        # Place buy order
                         order = self.api.submit_order(
                             symbol=symbol,
                             qty=qty,
@@ -163,6 +174,9 @@ class Trader:
                             type='market',
                             time_in_force='day'
                         )
+                        
+                        # Store the executed trade in the database
+                        self.store_trade(self._format_order(order))
                         logger.info(f"Initial position: Buy order placed for {qty} shares of {symbol} at ~${price:.2f}")
                         executed_orders.append(self._format_order(order))
                     except Exception as e:
@@ -193,9 +207,16 @@ class Trader:
             price = signal_data['price']
             signal_changed = signal_data.get('signal_changed', False)
             
-            # Skip if no action or signal hasn't changed
-            if action == 'hold' or not signal_changed:
+            # Skip if no action
+            if action == 'hold':
                 continue
+                
+            # Execute both buy and sell actions regardless of signal change
+            # This ensures we don't miss any trading opportunities
+            if action == 'buy' and not signal_changed:
+                logger.info(f"Buy signal for {symbol} hasn't changed, but executing anyway")
+                
+            logger.info(f"Processing {action} signal for {symbol} (signal_changed: {signal_changed})")
                 
             try:
                 if action == 'buy':
@@ -234,23 +255,145 @@ class Trader:
                     position = current_positions[symbol]
                     qty = abs(int(position.qty))
                     
-                    # Place sell order
-                    order = self.api.submit_order(
-                        symbol=symbol,
-                        qty=qty,
-                        side='sell',
-                        type='market',
-                        time_in_force='day'
-                    )
+                    logger.info(f"Attempting to sell {qty} shares of {symbol} at ~${price:.2f}")
                     
-                    logger.info(f"Sell order placed for {qty} shares of {symbol} at ~${price:.2f}")
-                    executed_orders.append(self._format_order(order))
+                    try:
+                        # Store the signal in the database
+                        signal_id = self.store_signal(symbol, signal_data)
+                        
+                        # Place sell order
+                        order = self.api.submit_order(
+                            symbol=symbol,
+                            qty=qty,
+                            side='sell',
+                            type='market',
+                            time_in_force='day'
+                        )
+                        
+                        # Format the order for storage and logging
+                        formatted_order = self._format_order(order)
+                        
+                        # Store the executed trade in the database
+                        self.store_trade(formatted_order)
+                        
+                        logger.info(f"Sell order successfully placed for {qty} shares of {symbol} at ~${price:.2f}")
+                        logger.info(f"Order details: ID={order.id}, Status={order.status}")
+                        executed_orders.append(formatted_order)
+                    except Exception as e:
+                        logger.error(f"Error placing sell order for {symbol}: {e}")
             
             except Exception as e:
                 logger.error(f"Error executing {action} order for {symbol}: {e}")
                 
         return executed_orders
         
+    def store_signal(self, symbol, signal_data, strategy_name="default"):
+        """
+        Store a trading signal in the database.
+        
+        Args:
+            symbol: Stock symbol
+            signal_data: Dictionary with signal data
+            strategy_name: Name of the strategy that generated the signal
+            
+        Returns:
+            int: ID of the inserted signal or None if failed
+        """
+        try:
+            # Prepare data for API request
+            url = f"{self.YFINANCE_DB_URL}/signals"
+            
+            # Extract signal data
+            action = signal_data.get('action', 'hold')
+            price = signal_data.get('price', 0)
+            signal_value = signal_data.get('signal', 0)
+            signal_changed = signal_data.get('signal_changed', False)
+            short_ma = signal_data.get('short_ma')
+            long_ma = signal_data.get('long_ma')
+            rsi = signal_data.get('rsi')
+            
+            # Build request params
+            params = {
+                'symbol': symbol,
+                'action': action,
+                'price': price,
+                'signal_value': signal_value,
+                'signal_changed': signal_changed,
+                'strategy': strategy_name
+            }
+            
+            # Add optional parameters if they exist
+            if short_ma is not None:
+                params['short_ma'] = short_ma
+            if long_ma is not None:
+                params['long_ma'] = long_ma
+            if rsi is not None:
+                params['rsi'] = rsi
+                
+            # Send request
+            response = requests.post(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                signal_id = result.get('id')
+                logger.info(f"Stored trading signal for {symbol}: {action} (ID: {signal_id})")
+                return signal_id
+            else:
+                logger.error(f"Error storing trading signal for {symbol}: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error storing trading signal for {symbol}: {e}")
+            return None
+            
+    def store_trade(self, order):
+        """
+        Store an executed trade in the database.
+        
+        Args:
+            order: Dictionary with order information
+            
+        Returns:
+            int: ID of the inserted trade or None if failed
+        """
+        try:
+            # Prepare data for API request
+            url = f"{self.YFINANCE_DB_URL}/trades"
+            
+            # Extract order data
+            order_id = order.get('id')
+            symbol = order.get('symbol')
+            side = order.get('side')
+            quantity = float(order.get('qty', 0))
+            price = float(order.get('price', 0))
+            status = order.get('status')
+            
+            # Build request params
+            params = {
+                'order_id': order_id,
+                'symbol': symbol,
+                'side': side,
+                'quantity': quantity,
+                'price': price,
+                'status': status
+            }
+            
+            # Send request
+            response = requests.post(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                trade_id = result.get('id')
+                logger.info(f"Stored executed trade for {symbol}: {side} {quantity} shares at ${price:.2f} (ID: {trade_id})")
+                return trade_id
+            else:
+                logger.error(f"Error storing executed trade for {symbol}: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error storing executed trade: {e}")
+            return None
+            
     def _format_order(self, order):
         """
         Format order information.

@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
 import pytz
+import requests
 from config import config
 from src.bot import AlpacaBot
 from src.data import MarketData
@@ -35,7 +36,132 @@ class Dashboard:
         }
         self.current_strategy = None
         self.data = {}
+        # YFinance DB service URL
+        self.yfinance_db_host = os.getenv("YFINANCE_DB_HOST", "localhost")
+        self.yfinance_db_port = int(os.getenv("YFINANCE_DB_PORT", "8001"))
+        self.yfinance_db_url = f"http://{self.yfinance_db_host}:{self.yfinance_db_port}"
+        
+        # Initialize connection status
+        self.yfinance_db_connected = False
+        self.check_yfinance_db_connection()
+        
+        # Initialize account and positions data
+        self.account_info = None
+        self.positions = None
+        self.refresh_account_data()
+        
+        logger.info(f"Dashboard initialized with YFinance DB URL: {self.yfinance_db_url}")
         logger.info("Dashboard initialized")
+        
+    def get_trading_signals(self, symbol, limit=100):
+        """
+        Get trading signals for a symbol from the YFinance DB service.
+        
+        Args:
+            symbol: Stock symbol
+            limit: Maximum number of signals to return
+            
+        Returns:
+            DataFrame: DataFrame with trading signals
+        """
+        try:
+            url = f"{self.yfinance_db_url}/signals/{symbol}"
+            params = {"limit": limit}
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data:
+                    df = pd.DataFrame(data)
+                    # Convert timestamp strings to datetime
+                    if 'timestamp' in df.columns:
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                    logger.info(f"Retrieved {len(df)} trading signals for {symbol}")
+                    return df
+                else:
+                    logger.warning(f"No trading signals found for {symbol}")
+                    return pd.DataFrame()
+            else:
+                logger.error(f"Error retrieving trading signals for {symbol}: {response.status_code} - {response.text}")
+                return pd.DataFrame()
+                
+        except Exception as e:
+            logger.error(f"Error connecting to YFinance DB service: {e}")
+            return pd.DataFrame()
+            
+    def get_executed_trades(self, symbol, limit=100):
+        """
+        Get executed trades for a symbol from the YFinance DB service.
+        
+        Args:
+            symbol: Stock symbol
+            limit: Maximum number of trades to return
+            
+        Returns:
+            DataFrame: DataFrame with executed trades
+        """
+        try:
+            url = f"{self.yfinance_db_url}/trades/{symbol}"
+            params = {"limit": limit}
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data:
+                    df = pd.DataFrame(data)
+                    # Convert timestamp strings to datetime
+                    if 'timestamp' in df.columns:
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                    logger.info(f"Retrieved {len(df)} executed trades for {symbol}")
+                    return df
+                else:
+                    logger.warning(f"No executed trades found for {symbol}")
+                    return pd.DataFrame()
+            else:
+                logger.error(f"Error retrieving executed trades for {symbol}: {response.status_code} - {response.text}")
+                return pd.DataFrame()
+                
+        except Exception as e:
+            logger.error(f"Error connecting to YFinance DB service: {e}")
+            return pd.DataFrame()
+            
+    def check_yfinance_db_connection(self):
+        """
+        Check if the YFinance DB service is available.
+        
+        Returns:
+            bool: True if connected, False otherwise
+        """
+        try:
+            url = f"{self.yfinance_db_url}/health"
+            response = requests.get(url, timeout=5)
+            
+            if response.status_code == 200:
+                self.yfinance_db_connected = True
+                logger.info("Successfully connected to YFinance DB service")
+                return True
+            else:
+                self.yfinance_db_connected = False
+                logger.warning(f"YFinance DB service returned status code: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            self.yfinance_db_connected = False
+            logger.error(f"Error connecting to YFinance DB service: {e}")
+            return False
+            
+    def refresh_account_data(self):
+        """
+        Refresh account and positions data from the market data service.
+        """
+        try:
+            self.account_info = self.market_data.get_account()
+            self.positions = self.market_data.get_positions()
+            logger.info("Account data refreshed successfully")
+        except Exception as e:
+            logger.error(f"Error refreshing account data: {e}")
 
     def run(self):
         """
@@ -140,24 +266,40 @@ class Dashboard:
         # Display bot status
         st.sidebar.subheader("Bot Status")
         is_market_open = self.market_data.is_market_open()
-        st.sidebar.metric(
+        
+        # Create two columns for status metrics
+        col1, col2 = st.sidebar.columns(2)
+        
+        col1.metric(
             "Market Status",
             "Open" if is_market_open else "Closed",
             delta=None
         )
         
+        # Display YFinance DB connection status
+        yf_status = "Connected" if self.yfinance_db_connected else "Disconnected"
+        yf_status_color = "green" if self.yfinance_db_connected else "red"
+        col2.markdown(f"**YFinance DB:** <span style='color:{yf_status_color}'>{yf_status}</span>", unsafe_allow_html=True)
+        
         # Display API connection status
         try:
             account = self.market_data.get_account()
             api_status = "Connected" if account else "Error"
+            api_status_color = "green" if account else "red"
         except:
             api_status = "Error"
+            api_status_color = "red"
             
-        st.sidebar.metric(
-            "API Connection",
-            api_status,
-            delta=None
-        )
+        col1.markdown(f"**API Status:** <span style='color:{api_status_color}'>{api_status}</span>", unsafe_allow_html=True)
+        
+        # Add a refresh button for YFinance DB connection
+        if st.sidebar.button("Check YFinance DB Connection"):
+            with st.sidebar:
+                with st.spinner("Checking connection..."):
+                    if self.check_yfinance_db_connection():
+                        st.success("Connected to YFinance DB service")
+                    else:
+                        st.error("Failed to connect to YFinance DB service")
         
         # Display environment info
         st.sidebar.subheader("Environment")
@@ -199,17 +341,22 @@ class Dashboard:
         
     def _build_portfolio_tab(self):
         """
-        Build the portfolio overview tab.
+        Build the portfolio overview tab with enhanced visualizations.
         """
         st.header("Portfolio Overview")
         
         try:
-            # Fetch account data
-            account_info = self.market_data.get_account()
-            positions = self.market_data.get_positions()
+            # Use cached account data if available, otherwise fetch it
+            account_info = self.account_info if self.account_info else self.market_data.get_account()
+            positions = self.positions if self.positions else self.market_data.get_positions()
             
             if not account_info:
                 st.warning("Could not fetch account information. Please check your API connection.")
+                # Add a retry button
+                if st.button("Retry Fetching Account Data"):
+                    with st.spinner("Fetching account data..."):
+                        self.refresh_account_data()
+                        st.experimental_rerun()
                 return
                 
             # Account metrics
@@ -230,11 +377,22 @@ class Dashboard:
                 f"${float(account_info.get('buying_power', 0)):.2f}"
             )
             
-            # Calculate daily P&L if we had previous data
-            # This is a placeholder - in a real implementation, you would track this over time
+            # Calculate daily P&L based on positions
             daily_pl = 0
+            if positions:
+                for position in positions:
+                    if 'unrealized_pl' in position:
+                        daily_pl += float(position.get('unrealized_pl', 0))
+            
+            # Determine if P&L is positive or negative for the delta color
+            delta_color = "normal"
+            if daily_pl > 0:
+                delta_color = "green"
+            elif daily_pl < 0:
+                delta_color = "red"
+                
             col4.metric(
-                "Daily P&L",
+                "Unrealized P&L",
                 f"${daily_pl:.2f}",
                 delta=f"{daily_pl:.2f}"
             )
@@ -273,17 +431,39 @@ class Dashboard:
                 
                 st.dataframe(display_df, use_container_width=True)
                 
-                # Portfolio allocation pie chart
+                # Portfolio allocation pie chart with enhanced visualization
                 st.subheader("Portfolio Allocation")
                 
-                fig = px.pie(
-                    positions_df,
-                    values='market_value',
-                    names='symbol',
-                    title='Portfolio Allocation by Symbol',
-                    hole=0.4
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                # Create two columns for the charts
+                chart_col1, chart_col2 = st.columns(2)
+                
+                with chart_col1:
+                    # Pie chart for allocation by symbol
+                    fig1 = px.pie(
+                        positions_df,
+                        values='market_value',
+                        names='symbol',
+                        title='Allocation by Symbol',
+                        hole=0.4,
+                        color_discrete_sequence=px.colors.qualitative.Bold
+                    )
+                    fig1.update_traces(textposition='inside', textinfo='percent+label')
+                    st.plotly_chart(fig1, use_container_width=True)
+                
+                with chart_col2:
+                    # Bar chart for position performance
+                    fig2 = px.bar(
+                        positions_df,
+                        x='symbol',
+                        y='profit_loss_pct',
+                        title='Position Performance (%)',
+                        color='profit_loss_pct',
+                        color_continuous_scale=['red', 'yellow', 'green'],
+                        text='profit_loss_pct'
+                    )
+                    fig2.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
+                    fig2.update_layout(xaxis_title="Symbol", yaxis_title="Profit/Loss (%)")
+                    st.plotly_chart(fig2, use_container_width=True)
                 
             else:
                 st.info("No positions currently held.")
@@ -587,103 +767,209 @@ class Dashboard:
         
     def _build_trading_history_tab(self):
         """
-        Build the trading history tab.
+        Build the trading history tab with real trading signals and executed trades.
         """
         st.header("Trading History")
         
-        # In a real implementation, you would fetch actual trading history from a database
-        # For now, we'll create some placeholder data
-        
-        # Generate placeholder trading history
-        np.random.seed(42)  # For reproducible results
-        
-        num_trades = 20
-        symbols = config.SYMBOLS
-        actions = ['buy', 'sell']
-        
-        dates = pd.date_range(end=datetime.now(), periods=num_trades, freq='D')
-        
-        trades = []
-        for i in range(num_trades):
-            symbol = np.random.choice(symbols)
-            action = actions[i % 2]  # Alternate buy/sell
-            price = round(np.random.uniform(100, 500), 2)
-            quantity = np.random.randint(1, 10)
-            pl = round(np.random.uniform(-100, 200), 2) if action == 'sell' else None
-            
-            trades.append({
-                'date': dates[i],
-                'symbol': symbol,
-                'action': action,
-                'price': price,
-                'quantity': quantity,
-                'value': price * quantity,
-                'profit_loss': pl
-            })
-            
-        trades_df = pd.DataFrame(trades)
-        
-        # Display trades table
-        st.subheader("Recent Trades")
-        
-        # Format the DataFrame for display
-        display_df = trades_df.copy()
-        display_df['date'] = display_df['date'].dt.strftime('%Y-%m-%d %H:%M')
-        display_df['price'] = display_df['price'].map('${:,.2f}'.format)
-        display_df['value'] = display_df['value'].map('${:,.2f}'.format)
-        
-        # Format profit/loss
-        display_df['profit_loss'] = display_df['profit_loss'].apply(
-            lambda x: f"${x:.2f}" if pd.notnull(x) else "N/A"
+        # Symbol selection for history
+        selected_symbol = st.selectbox(
+            "Select Symbol for Trading History",
+            config.SYMBOLS,
+            key="history_symbol"
         )
         
-        # Rename columns
-        display_df = display_df.rename(columns={
-            'date': 'Date',
-            'symbol': 'Symbol',
-            'action': 'Action',
-            'price': 'Price',
-            'quantity': 'Quantity',
-            'value': 'Value',
-            'profit_loss': 'Profit/Loss'
-        })
+        # Create tabs for signals and trades
+        signal_tab, trade_tab = st.tabs(["Trading Signals", "Executed Trades"])
         
-        # Display the table
-        st.dataframe(display_df, use_container_width=True)
-        
-        # Trading performance chart
-        st.subheader("Trading Performance")
-        
-        # Calculate cumulative P&L
-        cumulative_pl = []
-        running_total = 0
-        
-        for pl in trades_df['profit_loss']:
-            if pd.notnull(pl):
-                running_total += pl
-            cumulative_pl.append(running_total)
+        with signal_tab:
+            st.subheader(f"Trading Signals for {selected_symbol}")
             
-        performance_df = pd.DataFrame({
-            'date': trades_df['date'],
-            'cumulative_pl': cumulative_pl
-        })
+            # Fetch trading signals
+            signals_df = self.get_trading_signals(selected_symbol)
+            
+            if signals_df.empty:
+                st.info(f"No trading signals found for {selected_symbol}.")
+            else:
+                # Format the DataFrame for display
+                display_df = signals_df.copy()
+                
+                # Format timestamp
+                if 'timestamp' in display_df.columns:
+                    display_df['timestamp'] = display_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+                
+                # Format price and other numeric columns
+                numeric_cols = ['price', 'short_ma', 'long_ma', 'rsi']
+                for col in numeric_cols:
+                    if col in display_df.columns:
+                        display_df[col] = display_df[col].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else "N/A")
+                
+                # Rename columns for display
+                display_df = display_df.rename(columns={
+                    'timestamp': 'Date/Time',
+                    'action': 'Action',
+                    'signal': 'Signal Value',
+                    'signal_changed': 'Signal Changed',
+                    'price': 'Price',
+                    'short_ma': 'Short MA',
+                    'long_ma': 'Long MA',
+                    'rsi': 'RSI',
+                    'strategy': 'Strategy'
+                })
+                
+                # Display the signals
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Create a signal visualization
+                st.subheader(f"Signal Visualization for {selected_symbol}")
+                
+                # Prepare data for visualization
+                if 'timestamp' in signals_df.columns and 'price' in signals_df.columns:
+                    # Create a figure
+                    fig = go.Figure()
+                    
+                    # Add price line
+                    fig.add_trace(go.Scatter(
+                        x=signals_df['timestamp'],
+                        y=signals_df['price'],
+                        mode='lines',
+                        name='Price'
+                    ))
+                    
+                    # Add buy signals
+                    buy_signals = signals_df[signals_df['action'] == 'buy']
+                    if not buy_signals.empty:
+                        fig.add_trace(go.Scatter(
+                            x=buy_signals['timestamp'],
+                            y=buy_signals['price'],
+                            mode='markers',
+                            marker=dict(color='green', size=10, symbol='triangle-up'),
+                            name='Buy Signal'
+                        ))
+                    
+                    # Add sell signals
+                    sell_signals = signals_df[signals_df['action'] == 'sell']
+                    if not sell_signals.empty:
+                        fig.add_trace(go.Scatter(
+                            x=sell_signals['timestamp'],
+                            y=sell_signals['price'],
+                            mode='markers',
+                            marker=dict(color='red', size=10, symbol='triangle-down'),
+                            name='Sell Signal'
+                        ))
+                    
+                    # Update layout
+                    fig.update_layout(
+                        title=f"{selected_symbol} Price and Signals",
+                        xaxis_title="Date",
+                        yaxis_title="Price",
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1
+                        )
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("Insufficient data for signal visualization.")
         
-        # Create a line chart for the performance
-        performance_fig = px.line(
-            performance_df,
-            x='date',
-            y='cumulative_pl',
-            title='Cumulative Profit/Loss Over Time',
-            labels={'cumulative_pl': 'Cumulative P&L ($)', 'date': 'Date'}
-        )
-        
-        # Add a horizontal line at y=0
-        performance_fig.add_hline(
-            y=0,
-            line_dash="dash",
-            line_color="gray",
-            annotation_text="Breakeven",
-            annotation_position="bottom right"
-        )
-        
+        with trade_tab:
+            st.subheader(f"Executed Trades for {selected_symbol}")
+            
+            # Fetch executed trades
+            trades_df = self.get_executed_trades(selected_symbol)
+            
+            if trades_df.empty:
+                st.info(f"No executed trades found for {selected_symbol}.")
+            else:
+                # Format the DataFrame for display
+                display_df = trades_df.copy()
+                
+                # Format timestamp
+                if 'timestamp' in display_df.columns:
+                    display_df['timestamp'] = display_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+                
+                # Format price and quantity
+                if 'price' in display_df.columns:
+                    display_df['price'] = display_df['price'].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else "N/A")
+                
+                if 'quantity' in display_df.columns and 'price' in trades_df.columns:
+                    display_df['total_value'] = trades_df['quantity'] * trades_df['price']
+                    display_df['total_value'] = display_df['total_value'].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else "N/A")
+                
+                # Rename columns for display
+                display_df = display_df.rename(columns={
+                    'timestamp': 'Date/Time',
+                    'side': 'Side',
+                    'quantity': 'Quantity',
+                    'price': 'Price',
+                    'status': 'Status',
+                    'total_value': 'Total Value'
+                })
+                
+                # Display the trades
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Performance metrics
+                st.subheader("Performance Metrics")
+                
+                # Calculate performance metrics
+                total_trades = len(trades_df)
+                buy_trades = len(trades_df[trades_df['side'] == 'buy'])
+                sell_trades = len(trades_df[trades_df['side'] == 'sell'])
+                
+                # Calculate total value if price and quantity are available
+                total_value = 0
+                if 'price' in trades_df.columns and 'quantity' in trades_df.columns:
+                    total_value = (trades_df['price'] * trades_df['quantity']).sum()
+                
+                # Display metrics
+                col1, col2, col3, col4 = st.columns(4)
+                
+                col1.metric("Total Trades", total_trades)
+                col2.metric("Buy Trades", buy_trades)
+                col3.metric("Sell Trades", sell_trades)
+                col4.metric("Total Value", f"${total_value:,.2f}")
+                
+                # Trading performance chart (if we have enough data)
+                if len(trades_df) > 1:
+                    st.subheader("Trading Performance")
+                    
+                    # Sort trades by timestamp
+                    sorted_trades = trades_df.sort_values('timestamp')
+                    
+                    # Create a performance chart
+                    fig = go.Figure()
+                    
+                    # Add a trace for each trade
+                    fig.add_trace(go.Scatter(
+                        x=sorted_trades['timestamp'],
+                        y=sorted_trades['price'],
+                        mode='markers+lines',
+                        name='Trade Price',
+                        marker=dict(
+                            color=sorted_trades['side'].apply(lambda x: 'green' if x == 'buy' else 'red'),
+                            size=10,
+                            symbol=sorted_trades['side'].apply(lambda x: 'triangle-up' if x == 'buy' else 'triangle-down')
+                        )
+                    ))
+                    
+                    # Update layout
+                    fig.update_layout(
+                        title=f"{selected_symbol} Trading Performance",
+                        xaxis_title="Date",
+                        yaxis_title="Price",
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1
+                        )
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+        # Note: The performance_fig is already plotted above, no need to plot it again
         st.plotly_chart(performance_fig, use_container_width=True)

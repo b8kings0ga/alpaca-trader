@@ -25,6 +25,8 @@ def main():
                             help='Data source to use (yfinance, alpaca, or yfinance-db)')
         parser.add_argument('--use-yfinance-db', action='store_true',
                             help='Use YFinance DB service for data')
+        parser.add_argument('--use-real-positions', action='store_true',
+                            help='Use real positions from Alpaca API instead of simulated positions')
         args = parser.parse_args()
         
         # Determine data source
@@ -42,6 +44,13 @@ def main():
         if args.use_alpaca:
             data_source = 'alpaca'
             use_yfinance_db = False
+        
+        # Set USE_REAL_POSITIONS in config based on command-line argument
+        from config import config
+        if args.use_real_positions:
+            # Override the config setting with the command-line argument
+            config.USE_REAL_POSITIONS = True
+            print(f"Using real positions from Alpaca API")
             
         # Log the data source being used
         print(f"Using data source: {data_source}")

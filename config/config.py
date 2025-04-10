@@ -17,7 +17,7 @@ ALPACA_BASE_URL = os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets
 ALPACA_DATA_URL = os.getenv('ALPACA_DATA_URL', 'https://data.alpaca.markets')
 
 # Trading parameters
-SYMBOLS = ['AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META']  # Stocks to trade
+SYMBOLS = ['AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'TSLA', 'NVDA']  # Stocks to trade
 MAX_POSITIONS = 5  # Maximum number of positions to hold
 POSITION_SIZE = 0.2  # Percentage of portfolio per position
 
@@ -59,3 +59,6 @@ SMTP_SERVER = os.getenv('SMTP_SERVER', '')
 SMTP_PORT = os.getenv('SMTP_PORT', 587)
 SMTP_USERNAME = os.getenv('SMTP_USERNAME', '')
 SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', '')
+
+# Position settings
+USE_REAL_POSITIONS = os.getenv('USE_REAL_POSITIONS', 'False').lower() == 'true'  # Whether to use real positions from Alpaca API
