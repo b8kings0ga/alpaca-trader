@@ -137,17 +137,52 @@ class YFinanceDataService:
         conn.close()
         logger.info("Database tables created if they didn't exist")
         logger.info("Database schema includes tables for market data, signals, and trades")
-        
         # Check if we need to initialize sample data
-        if os.getenv("INIT_SAMPLE_DATA", "false").lower() == "true":
+        init_sample_data_value = os.getenv("INIT_SAMPLE_DATA", "false")
+        logger.info(f"INIT_SAMPLE_DATA environment variable value: '{init_sample_data_value}'")
+        
+        if init_sample_data_value.lower() == "true":
             logger.info("INIT_SAMPLE_DATA is set to true, initializing sample data")
-            self._init_sample_data()
+            try:
+                # Check if trading_signals table already has data
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM trading_signals")
+                existing_signals = cursor.fetchone()[0]
+                logger.info(f"Current number of records in trading_signals table: {existing_signals}")
+                conn.close()
+                
+                if existing_signals > 0:
+                    logger.info("Trading signals table already has data, skipping sample data initialization")
+                else:
+                    logger.info("Trading signals table is empty, initializing with sample data")
+                    self._init_sample_data()
+                    
+                    # Verify that sample data was added
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM trading_signals")
+                    new_signal_count = cursor.fetchone()[0]
+                    logger.info(f"After initialization, trading_signals table has {new_signal_count} records")
+                    conn.close()
+            except Exception as e:
+                logger.error(f"Error during sample data initialization check: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                # Try to initialize sample data anyway
+                try:
+                    logger.info("Attempting to initialize sample data despite error")
+                    self._init_sample_data()
+                except Exception as inner_e:
+                    logger.error(f"Error initializing sample data: {inner_e}")
+                    logger.error(f"Traceback: {traceback.format_exc()}")
         else:
-            logger.info("INIT_SAMPLE_DATA is not set to true, skipping sample data initialization")
+            logger.info(f"INIT_SAMPLE_DATA is not set to true (value: '{init_sample_data_value}'), skipping sample data initialization")
         # Removed duplicate call to _init_sample_data()
         
     def _init_sample_data(self):
         """Initialize database with sample data for testing."""
+        logger.info("Explicitly initializing sample data for testing")
         logger.info("Initializing sample data for testing")
         
         try:
@@ -161,7 +196,19 @@ class YFinanceDataService:
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             
+            # Check if trading_signals table already has data
+            cursor.execute("SELECT COUNT(*) FROM trading_signals")
+            existing_signals = cursor.fetchone()[0]
+            logger.info(f"Existing signals in trading_signals table: {existing_signals}")
+            
+            if existing_signals > 0:
+                logger.info("Trading signals table already has data, skipping sample data initialization")
+                conn.close()
+                return
+                
+            logger.info("Adding sample trading signals for common symbols")
             # Sample trading signals for common symbols
+            signals_added = 0
             for symbol in ["AAPL", "MSFT", "AMZN", "GOOGL", "META"]:
                 # Create a few sample signals with different timestamps
                 for i in range(5):
@@ -171,16 +218,23 @@ class YFinanceDataService:
                     signal_value = 1.0 if action == "buy" else -1.0
                     signal_changed = i == 0
                     
-                    cursor.execute('''
-                    INSERT OR REPLACE INTO trading_signals
-                    (symbol, timestamp, action, signal, signal_changed, price, short_ma, long_ma, rsi, interval, strategy)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        symbol, timestamp, action, signal_value, signal_changed, price,
-                        50.0, 200.0, 60.0, DEFAULT_INTERVAL, "default"
-                    ))
+                    try:
+                        cursor.execute('''
+                        INSERT OR REPLACE INTO trading_signals
+                        (symbol, timestamp, action, signal, signal_changed, price, short_ma, long_ma, rsi, interval, strategy)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            symbol, timestamp, action, signal_value, signal_changed, price,
+                            50.0, 200.0, 60.0, DEFAULT_INTERVAL, "default"
+                        ))
+                        signals_added += 1
+                        logger.debug(f"Added sample signal for {symbol}: {action} at {price}")
+                    except sqlite3.Error as sql_err:
+                        logger.error(f"SQLite error adding signal for {symbol}: {sql_err}")
             
+            logger.info("Adding sample executed trades for common symbols")
             # Sample executed trades for common symbols
+            trades_added = 0
             for symbol in ["AAPL", "MSFT", "AMZN"]:
                 # Create a few sample trades with different timestamps
                 for i in range(3):
@@ -189,13 +243,18 @@ class YFinanceDataService:
                     quantity = 10.0
                     price = 100.0 + i * 5.0
                     
-                    cursor.execute('''
-                    INSERT INTO executed_trades
-                    (order_id, symbol, timestamp, side, quantity, price, status, signal_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        f"order-{symbol}-{i}", symbol, timestamp, side, quantity, price, "filled", None
-                    ))
+                    try:
+                        cursor.execute('''
+                        INSERT INTO executed_trades
+                        (order_id, symbol, timestamp, side, quantity, price, status, signal_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            f"order-{symbol}-{i}", symbol, timestamp, side, quantity, price, "filled", None
+                        ))
+                        trades_added += 1
+                        logger.debug(f"Added sample trade for {symbol}: {side} {quantity} at {price}")
+                    except sqlite3.Error as sql_err:
+                        logger.error(f"SQLite error adding trade for {symbol}: {sql_err}")
             
             # Count the number of records inserted
             cursor.execute("SELECT COUNT(*) FROM trading_signals")
@@ -210,10 +269,13 @@ class YFinanceDataService:
             cursor.execute("SELECT COUNT(*) FROM executed_trades")
             trade_count = cursor.fetchone()[0]
             
+            # Commit the changes
             conn.commit()
+            
             conn.close()
             
-            logger.info(f"Sample data initialized successfully: {signal_count} signals, {trade_count} trades")
+            logger.info(f"Sample data initialized successfully: {signals_added} signals added, {trades_added} trades added")
+            logger.info(f"Total after initialization: {signal_count} signals, {trade_count} trades")
             
         except Exception as e:
             logger.error(f"Error initializing sample data: {e}")
@@ -1264,6 +1326,26 @@ def fetch_historical_data():
 # Main function
 def main():
     """Main function to start the service."""
+    # Log configuration
+    logger.info(f"YFinance DB Service Configuration:")
+    logger.info(f"- MAX_DB_SIZE_GB: {MAX_DB_SIZE_GB}")
+    logger.info(f"- FETCH_INTERVAL_MINUTES: {FETCH_INTERVAL_MINUTES}")
+    logger.info(f"- SYMBOLS: {SYMBOLS}")
+    logger.info(f"- DB_PATH: {DB_PATH}")
+    logger.info(f"- DEFAULT_INTERVAL: {DEFAULT_INTERVAL}")
+    logger.info(f"- INIT_SAMPLE_DATA: {os.getenv('INIT_SAMPLE_DATA', 'false')}")
+    
+    # Explicitly check if we need to initialize sample data
+    init_sample_data = os.getenv("INIT_SAMPLE_DATA", "false").lower() == "true"
+    if init_sample_data:
+        logger.info("INIT_SAMPLE_DATA is set to true, explicitly initializing sample data")
+        try:
+            service._init_sample_data()
+        except Exception as e:
+            logger.error(f"Error during explicit sample data initialization: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
     # Schedule Process 1: Fetch newest data every minute
     scheduler.add_job(
         fetch_newest_data,
@@ -1281,15 +1363,6 @@ def main():
         id='historical_data_fetch',
         replace_existing=True
     )
-    
-    # Log configuration
-    logger.info(f"YFinance DB Service Configuration:")
-    logger.info(f"- MAX_DB_SIZE_GB: {MAX_DB_SIZE_GB}")
-    logger.info(f"- FETCH_INTERVAL_MINUTES: {FETCH_INTERVAL_MINUTES}")
-    logger.info(f"- SYMBOLS: {SYMBOLS}")
-    logger.info(f"- DB_PATH: {DB_PATH}")
-    logger.info(f"- DEFAULT_INTERVAL: {DEFAULT_INTERVAL}")
-    logger.info(f"- INIT_SAMPLE_DATA: {os.getenv('INIT_SAMPLE_DATA', 'false')}")
     
     # Start the scheduler
     scheduler.start()

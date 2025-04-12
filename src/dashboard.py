@@ -43,7 +43,35 @@ class Dashboard:
         # YFinance DB service URL
         self.yfinance_db_host = os.getenv("YFINANCE_DB_HOST", "localhost")
         self.yfinance_db_port = int(os.getenv("YFINANCE_DB_PORT", "8001"))
-        self.yfinance_db_url = f"http://{self.yfinance_db_host}:{self.yfinance_db_port}"
+        
+        # Check if we're running in Docker or directly
+        # If YFINANCE_DB_HOST is set to 'yfinance-db' but we can't connect to it,
+        # fall back to localhost
+        def _get_yfinance_db_url():
+            host = self.yfinance_db_host
+            port = self.yfinance_db_port
+            
+            # If host is set to 'yfinance-db', check if we can connect to it
+            if host == 'yfinance-db':
+                try:
+                    import socket
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(1)
+                    result = s.connect_ex((host, port))
+                    s.close()
+                    
+                    # If we can't connect, fall back to localhost
+                    if result != 0:
+                        logger.warning(f"Cannot connect to {host}:{port}, falling back to localhost")
+                        host = 'localhost'
+                except Exception as e:
+                    logger.warning(f"Error checking connection to {host}:{port}: {e}, falling back to localhost")
+                    host = 'localhost'
+            
+            return f"http://{host}:{port}"
+        
+        self.yfinance_db_url = _get_yfinance_db_url()
+        logger.info(f"Using YFinance DB URL: {self.yfinance_db_url}")
         
         # Initialize connection status
         self.yfinance_db_connected = False
@@ -54,9 +82,85 @@ class Dashboard:
         self.positions = None
         self.refresh_account_data()
         
+        # Initialize strategy
+        self.current_strategy = 'moving_average_crossover'  # Default strategy
+        self.strategy = get_strategy(self.current_strategy)
+        
+        # Automatically fetch data for default symbols on startup
+        try:
+            logger.info("Automatically fetching initial data for default symbols")
+            default_symbols = config.SYMBOLS[:3]  # Use first 3 symbols by default
+            if hasattr(self.strategy, 'fetch_data') and callable(getattr(self.strategy, 'fetch_data')):
+                self.data = self.strategy.fetch_data(default_symbols)
+                logger.info(f"Initial data fetched for {len(self.data)} symbols using YFinance")
+            else:
+                self.data = self.market_data.get_bars(default_symbols, "1D", 30)  # 30 days of daily data
+                logger.info(f"Initial data fetched for {len(self.data)} symbols using Alpaca API")
+        except Exception as e:
+            logger.error(f"Error fetching initial data: {e}")
+            self.data = {}
+        
         logger.info(f"Dashboard initialized with YFinance DB URL: {self.yfinance_db_url}")
         logger.info("Dashboard initialized")
         
+    def _display_connection_status(self):
+        """
+        Display the connection status to the YFinance DB service.
+        """
+        # Create a container for the connection status
+        conn_container = st.container()
+        
+        with conn_container:
+            # Check connection status
+            if self.yfinance_db_connected:
+                st.success("✅ YFinance DB Service: Connected")
+            else:
+                st.error("❌ YFinance DB Service: Disconnected")
+                st.info("Attempting to reconnect... Check logs for details.")
+                
+                # Add a button to manually retry connection
+                if st.button("Retry Connection"):
+                    with st.spinner("Connecting to YFinance DB Service..."):
+                        if self.check_yfinance_db_connection():
+                            st.success("✅ Connection successful!")
+                        else:
+                            st.error("❌ Connection failed. Check logs for details.")
+                            
+    def _setup_connection_check_thread(self):
+        """
+        Set up a background thread to periodically check the connection to the YFinance DB service.
+        """
+        import threading
+        
+        def check_connection_periodically():
+            """Background thread function to check connection periodically."""
+            while True:
+                try:
+                    # Sleep first to allow initial connection attempt to complete
+                    import time
+                    time.sleep(self.connection_check_interval)
+                    
+                    # Check connection
+                    logger.info(f"Performing periodic connection check to YFinance DB service")
+                    was_connected = self.yfinance_db_connected
+                    is_connected = self.check_yfinance_db_connection()
+                    
+                    if not was_connected and is_connected:
+                        logger.info(f"YFinance DB service connection restored")
+                    elif was_connected and not is_connected:
+                        logger.warning(f"YFinance DB service connection lost")
+                except Exception as e:
+                    logger.error(f"Error in connection check thread: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Start the background thread
+        connection_thread = threading.Thread(
+            target=check_connection_periodically,
+            daemon=True  # Make thread a daemon so it exits when the main thread exits
+        )
+        connection_thread.start()
+        logger.info(f"Started background thread for periodic connection checks every {self.connection_check_interval} seconds")
     def get_trading_signals(self, symbol, limit=100):
         """
         Get trading signals for a symbol from the YFinance DB service.
@@ -168,63 +272,6 @@ class Dashboard:
                 logger.error(f"Failed to connect to YFinance DB service. Cannot retrieve executed trades.")
                 return pd.DataFrame()
                 
-        def _display_connection_status(self):
-            """
-            Display the connection status to the YFinance DB service.
-            """
-            # Create a container for the connection status
-            conn_container = st.container()
-            
-            with conn_container:
-                # Check connection status
-                if self.yfinance_db_connected:
-                    st.success("✅ YFinance DB Service: Connected")
-                else:
-                    st.error("❌ YFinance DB Service: Disconnected")
-                    st.info("Attempting to reconnect... Check logs for details.")
-                    
-                    # Add a button to manually retry connection
-                    if st.button("Retry Connection"):
-                        with st.spinner("Connecting to YFinance DB Service..."):
-                            if self.check_yfinance_db_connection():
-                                st.success("✅ Connection successful!")
-                            else:
-                                st.error("❌ Connection failed. Check logs for details.")
-        def _setup_connection_check_thread(self):
-            """
-            Set up a background thread to periodically check the connection to the YFinance DB service.
-            """
-            import threading
-            
-            def check_connection_periodically():
-                """Background thread function to check connection periodically."""
-                while True:
-                    try:
-                        # Sleep first to allow initial connection attempt to complete
-                        import time
-                        time.sleep(self.connection_check_interval)
-                        
-                        # Check connection
-                        logger.info(f"Performing periodic connection check to YFinance DB service")
-                        was_connected = self.yfinance_db_connected
-                        is_connected = self.check_yfinance_db_connection()
-                        
-                        if not was_connected and is_connected:
-                            logger.info(f"YFinance DB service connection restored")
-                        elif was_connected and not is_connected:
-                            logger.warning(f"YFinance DB service connection lost")
-                    except Exception as e:
-                        logger.error(f"Error in connection check thread: {e}")
-                        import traceback
-                        logger.error(f"Traceback: {traceback.format_exc()}")
-            
-            # Start the background thread
-            connection_thread = threading.Thread(
-                target=check_connection_periodically,
-                daemon=True  # Make thread a daemon so it exits when the main thread exits
-            )
-            connection_thread.start()
-            logger.info(f"Started background thread for periodic connection checks every {self.connection_check_interval} seconds")
         try:
             url = f"{self.yfinance_db_url}/trades/{symbol}"
             params = {"limit": limit}

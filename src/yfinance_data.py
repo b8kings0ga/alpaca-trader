@@ -370,6 +370,47 @@ class YFinanceData:
         Returns:
             dict: Account information with keys 'equity', 'cash', 'buying_power', 'portfolio_value'
         """
+        from config import config
+        
+        # Check if we should use real account info from Alpaca API
+        if config.USE_REAL_POSITIONS:
+            try:
+                logger.info("YFinanceData.get_account() - Using real account info from Alpaca API")
+                
+                # Initialize Alpaca API client
+                import alpaca_trade_api as tradeapi
+                
+                # Remove trailing /v2 from base URL if present to avoid duplicate version in path
+                base_url = config.ALPACA_BASE_URL
+                if base_url.endswith('/v2'):
+                    base_url = base_url[:-3]
+                
+                api = tradeapi.REST(
+                    config.ALPACA_API_KEY,
+                    config.ALPACA_API_SECRET,
+                    base_url,
+                    api_version='v2'
+                )
+                
+                # Get real account info from Alpaca API
+                account = api.get_account()
+                logger.info(f"Retrieved real account info from Alpaca API: Equity=${float(account.equity):.2f}")
+                
+                # Convert Account object to dictionary for consistency
+                account_dict = {
+                    'equity': float(account.equity),
+                    'cash': float(account.cash),
+                    'buying_power': float(account.buying_power),
+                    'portfolio_value': float(account.portfolio_value)
+                }
+                return account_dict
+                
+            except Exception as e:
+                logger.error(f"Error getting real account info from Alpaca API: {e}")
+                logger.warning("Falling back to simulated account info")
+                # Fall back to simulated account info if there's an error
+        
+        # Provide simulated account info
         logger.info("YFinanceData.get_account() - Providing mock account data")
         
         # Always return a dictionary with consistent keys
@@ -381,7 +422,48 @@ class YFinanceData:
         }
     
     def get_positions(self):
-        """Get mock positions."""
+        """
+        Get current positions.
+        
+        Returns:
+            list: List of positions
+        """
+        from config import config
+        
+        # Check if we should use real positions from Alpaca API
+        logger.info(f"YFinanceData.get_positions() - USE_REAL_POSITIONS is set to: {config.USE_REAL_POSITIONS}")
+        
+        if config.USE_REAL_POSITIONS:
+            try:
+                logger.info("YFinanceData.get_positions() - Using real positions from Alpaca API")
+                
+                # Initialize Alpaca API client
+                import alpaca_trade_api as tradeapi
+                
+                # Remove trailing /v2 from base URL if present to avoid duplicate version in path
+                base_url = config.ALPACA_BASE_URL
+                if base_url.endswith('/v2'):
+                    base_url = base_url[:-3]
+                
+                api = tradeapi.REST(
+                    config.ALPACA_API_KEY,
+                    config.ALPACA_API_SECRET,
+                    base_url,
+                    api_version='v2'
+                )
+                
+                # Get real positions from Alpaca API
+                positions = api.list_positions()
+                logger.info(f"Retrieved {len(positions)} real positions from Alpaca API")
+                return positions
+                
+            except Exception as e:
+                logger.error(f"Error getting real positions from Alpaca API: {e}")
+                logger.warning("Falling back to simulated positions")
+                # Fall back to simulated positions if there's an error
+        
+        # Provide mock positions
+        logger.info("YFinanceData.get_positions() - Providing mock positions")
         return []
     
     def is_market_open(self):

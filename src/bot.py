@@ -72,13 +72,17 @@ class AlpacaBot:
         Args:
             force_initial_positions (bool): Whether to force creating initial positions if none exist
         """
+        # Generate a unique run ID for this execution
+        import uuid
+        run_id = str(uuid.uuid4())[:8]
+        
         if self.is_running:
-            logger.warning("Bot is already running")
+            logger.warning(f"[Run ID: {run_id}] Bot is already running - skipping this run")
             return
         
         self.is_running = True
         start_time = time.time()
-        logger.info("Starting trading run")
+        logger.info(f"[Run ID: {run_id}] Starting trading run at {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
         
         try:
             # Check if market is open
@@ -166,13 +170,31 @@ class AlpacaBot:
             signals = self.strategy.generate_signals(data)
             logger.info(f"Generated signals for {len(signals)} symbols")
             
-            # Log signals
+            # Count signal types
+            buy_signals = sum(1 for s in signals.values() if s['action'] == 'buy')
+            sell_signals = sum(1 for s in signals.values() if s['action'] == 'sell')
+            hold_signals = sum(1 for s in signals.values() if s['action'] == 'hold')
+            logger.info(f"Signal summary: {buy_signals} buy, {sell_signals} sell, {hold_signals} hold")
+            
+            # Log signals with more details
             for symbol, signal_data in signals.items():
-                logger.info(f"Signal for {symbol}: {signal_data['action']} (changed: {signal_data.get('signal_changed', False)})")
+                action = signal_data['action']
+                price = signal_data.get('price', 0)
+                signal_changed = signal_data.get('signal_changed', False)
+                short_ma = signal_data.get('short_ma', None)
+                long_ma = signal_data.get('long_ma', None)
+                
+                ma_info = ""
+                if short_ma is not None and long_ma is not None:
+                    ma_info = f", short_ma: {short_ma:.2f}, long_ma: {long_ma:.2f}, diff: {short_ma - long_ma:.2f}"
+                
+                logger.info(f"Signal for {symbol}: {action} (changed: {signal_changed}, price: ${price:.2f}{ma_info})")
             
             # Execute signals with option to force initial positions
+            # Pass the run_id to the trader for consistent logging
+            self.trader.run_id = run_id
             executed_orders = self.trader.execute_signals(signals, account_info, force_initial_positions)
-            logger.info(f"Executed {len(executed_orders)} orders")
+            logger.info(f"[Run ID: {run_id}] Executed {len(executed_orders)} orders")
             
             # Send notifications for executed orders
             for order in executed_orders:
@@ -185,15 +207,87 @@ class AlpacaBot:
             # Log updated account information
             logger.info(f"Updated account equity: ${float(updated_account.get('equity', 0)):.2f}")
             
+            # Convert positions list to a dictionary for easier lookup in notifications
+            positions_dict = {}
+            logger.info(f"Converting positions to dictionary. Type of updated_positions: {type(updated_positions)}")
+            if updated_positions:
+                logger.info(f"First position type: {type(updated_positions[0])}")
+                logger.info(f"First position dir: {dir(updated_positions[0])}")
+                logger.info(f"First position repr: {repr(updated_positions[0])}")
+            
+            # Convert positions to a list of dictionaries instead of a dictionary
+            positions_list = []
+            
+            for position in updated_positions:
+                try:
+                    # Try dictionary-like access first (for Alpaca API)
+                    symbol = position['symbol']
+                    # Convert position to dictionary explicitly
+                    if hasattr(position, '_asdict'):  # namedtuple
+                        position_dict = position._asdict()
+                    else:  # already a dict
+                        position_dict = position
+                    # Add to both the dictionary and the list
+                    positions_dict[symbol] = position_dict
+                    positions_list.append(position_dict)
+                    logger.info(f"Added position for {symbol} using dictionary access")
+                except (TypeError, KeyError) as e:
+                    logger.info(f"Dictionary access failed: {e}, trying attribute access")
+                    # Fall back to attribute access (for namedtuples)
+                    try:
+                        symbol = position.symbol
+                        # Convert namedtuple to dictionary
+                        if hasattr(position, '_asdict'):
+                            position_dict = position._asdict()
+                        else:
+                            # Create a dictionary manually
+                            position_dict = {
+                                'symbol': symbol,
+                                'qty': position.qty,
+                                'market_value': position.market_value,
+                                'avg_entry_price': position.avg_entry_price,
+                                'current_price': position.current_price,
+                                'unrealized_pl': position.unrealized_pl
+                            }
+                        logger.info(f"Added position for {symbol} using attribute access")
+                        # Add to both the dictionary and the list
+                        positions_dict[symbol] = position_dict
+                        positions_list.append(position_dict)
+                    except AttributeError as e:
+                        logger.info(f"Attribute access failed: {e}, trying tuple access")
+                        # If it's a regular tuple, try to access by index
+                        try:
+                            logger.info(f"Position appears to be a regular tuple: {position}")
+                            symbol = str(position[0])  # Assuming symbol is the first element
+                            # Create a dictionary from the tuple
+                            position_dict = {
+                                'symbol': symbol,
+                                'qty': position[1],
+                                'market_value': float(position[2]),
+                                'avg_entry_price': float(position[3]),
+                                'current_price': float(position[4]),
+                                'unrealized_pl': float(position[5])
+                            }
+                            positions_dict[symbol] = position_dict
+                            positions_list.append(position_dict)
+                            logger.info(f"Added position for {symbol} using tuple access")
+                        except (IndexError, TypeError) as e:
+                            logger.error(f"Unable to extract position data from: {position}, error: {e}")
+                            continue
+            
             # Send portfolio status notification
-            self.notification.notify_portfolio_status(updated_account, updated_positions)
+            self.notification.notify_portfolio_status(updated_account, positions_list)
             
             # Update last run time
             self.last_run_time = datetime.now()
             
             # Log execution time
             execution_time = time.time() - start_time
-            logger.info(f"Trading run completed in {execution_time:.2f} seconds")
+            logger.info(f"[Run ID: {run_id}] Trading run completed in {execution_time:.2f} seconds at {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+            
+            # Check if execution time is close to or exceeds the scheduler interval
+            if execution_time > (config.RUN_INTERVAL * 60 * 0.8):  # If execution time is >80% of the interval
+                logger.warning(f"[Run ID: {run_id}] Execution time ({execution_time:.2f}s) is approaching or exceeding the scheduler interval ({config.RUN_INTERVAL * 60}s). This may cause overlapping runs!")
             
         except Exception as e:
             import traceback

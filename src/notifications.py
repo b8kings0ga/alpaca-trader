@@ -157,24 +157,71 @@ Time: {order['created_at']}
         
         # Format positions
         positions_str = ""
+        logger.info(f"Processing {len(positions)} positions in notify_portfolio_status")
+        logger.info(f"Type of positions: {type(positions)}")
+        if positions and len(positions) > 0:
+            logger.info(f"First position type: {type(positions[0])}")
+            logger.info(f"First position: {positions[0]}")
+            if hasattr(positions[0], '_fields'):
+                logger.info(f"Position fields: {positions[0]._fields}")
+            else:
+                logger.info(f"Position dir: {dir(positions[0])}")
+        
         for pos in positions:
-            # Handle both dictionary and namedtuple positions
+            # Handle different types of position objects
             try:
                 # Try dictionary access first
+                logger.info(f"Trying dictionary access for position: {pos}")
+                logger.info(f"Position type: {type(pos)}")
+                logger.info(f"Position dir: {dir(pos)}")
+                logger.info(f"Is namedtuple? {isinstance(pos, tuple) and hasattr(pos, '_fields')}")
+                if hasattr(pos, '_fields'):
+                    logger.info(f"Position fields: {pos._fields}")
+                    # Use attribute access for namedtuples
+                    symbol = pos.symbol
+                    qty = pos.qty
+                    market_value = float(pos.market_value)
+                    avg_entry_price = float(pos.avg_entry_price)
+                    current_price = float(pos.current_price)
+                    unrealized_pl = float(pos.unrealized_pl)
+                    logger.info(f"Successfully accessed position data using attribute access for {symbol}")
+                    continue
+                # Try dictionary access
                 symbol = pos['symbol']
                 qty = pos['qty']
                 market_value = float(pos['market_value'])
                 avg_entry_price = float(pos['avg_entry_price'])
                 current_price = float(pos['current_price'])
                 unrealized_pl = float(pos['unrealized_pl'])
-            except (TypeError, KeyError):
-                # Fall back to attribute access for namedtuples
-                symbol = pos.symbol
-                qty = pos.qty
-                market_value = float(pos.market_value)
-                avg_entry_price = float(pos.avg_entry_price)
-                current_price = float(pos.current_price)
-                unrealized_pl = float(pos.unrealized_pl)
+                logger.info(f"Dictionary access successful for {symbol}")
+            except (TypeError, KeyError) as e:
+                logger.info(f"Dictionary access failed: {e}")
+                try:
+                    # Fall back to attribute access for namedtuples
+                    logger.info(f"Trying attribute access for position: {pos}")
+                    symbol = pos.symbol
+                    qty = pos.qty
+                    market_value = float(pos.market_value)
+                    avg_entry_price = float(pos.avg_entry_price)
+                    current_price = float(pos.current_price)
+                    unrealized_pl = float(pos.unrealized_pl)
+                    logger.info(f"Attribute access successful for {symbol}")
+                except (AttributeError, TypeError) as e:
+                    # If it's a regular tuple, try to access by index
+                    logger.info(f"Attribute access failed: {e}")
+                    try:
+                        logger.info(f"Position appears to be a regular tuple: {pos}")
+                        logger.info(f"Tuple length: {len(pos)}")
+                        symbol = pos[0]  # Assuming symbol is the first element
+                        qty = pos[1]     # Assuming qty is the second element
+                        market_value = float(pos[2])
+                        avg_entry_price = float(pos[3])
+                        current_price = float(pos[4])
+                        unrealized_pl = float(pos[5])
+                        logger.info(f"Tuple access successful for {symbol}")
+                    except (IndexError, TypeError) as e:
+                        logger.error(f"Unable to extract position data from: {pos}, error: {e}")
+                        continue
                 
             positions_str += f"""
 Symbol: {symbol}

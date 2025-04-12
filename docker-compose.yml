@@ -40,6 +40,7 @@ services:
       - USE_YFINANCE_DB=true
       - YFINANCE_DB_HOST=yfinance-db
       - YFINANCE_DB_PORT=8001
+      - USE_REAL_POSITIONS=true
       - TZ=America/New_York
     env_file:
       - .env
@@ -65,6 +66,7 @@ services:
       - ALPACA_DATA_URL=${ALPACA_DATA_URL:-https://data.alpaca.markets}
       - YFINANCE_DB_HOST=yfinance-db
       - YFINANCE_DB_PORT=8001
+      - USE_REAL_POSITIONS=true
       - TZ=America/New_York
     env_file:
       - .env

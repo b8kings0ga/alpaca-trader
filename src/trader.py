@@ -14,7 +14,74 @@ class Trader:
     # YFinance DB service URL
     YFINANCE_DB_HOST = os.getenv("YFINANCE_DB_HOST", "localhost")
     YFINANCE_DB_PORT = int(os.getenv("YFINANCE_DB_PORT", "8001"))
-    YFINANCE_DB_URL = f"http://{YFINANCE_DB_HOST}:{YFINANCE_DB_PORT}"
+    
+    # Check if we're running in Docker or directly
+    # If YFINANCE_DB_HOST is set to 'yfinance-db' but we can't connect to it,
+    # fall back to localhost
+    @classmethod
+    def _get_yfinance_db_url(cls):
+        """
+        Get the YFinance DB URL with proper host and port.
+        This is a class method so it can be called before any instances are created.
+        
+        Returns:
+            str: The YFinance DB URL
+        """
+        # Always use yfinance-db as the host when running in Docker
+        host = os.getenv("YFINANCE_DB_HOST", "yfinance-db")
+        port = int(os.getenv("YFINANCE_DB_PORT", "8001"))
+        
+        # Log environment variables for debugging
+        logger.info(f"Environment variables for YFinance DB connection:")
+        logger.info(f"YFINANCE_DB_HOST: {os.getenv('YFINANCE_DB_HOST', 'not set')}")
+        logger.info(f"YFINANCE_DB_PORT: {os.getenv('YFINANCE_DB_PORT', 'not set')}")
+        
+        # Check if we're running in Docker
+        is_docker = os.path.exists('/.dockerenv')
+        logger.info(f"Running in Docker container: {is_docker}")
+        
+        # Always use the configured host without falling back to localhost
+        # This ensures we use the Docker service name when running in Docker
+        logger.info(f"Using YFinance DB host: {host}:{port}")
+        
+        # Add retry logic to wait for the service to be available
+        max_retries = 5
+        retry_delay = 2  # seconds
+        
+        for retry in range(max_retries):
+            try:
+                import socket
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1)
+                result = s.connect_ex((host, port))
+                s.close()
+                
+                if result == 0:
+                    logger.info(f"Successfully connected to {host}:{port}")
+                    break
+                else:
+                    logger.warning(f"Cannot connect to {host}:{port}, retry {retry+1}/{max_retries}")
+                    import time
+                    time.sleep(retry_delay)
+            except Exception as e:
+                logger.warning(f"Error checking connection to {host}:{port}: {e}, retry {retry+1}/{max_retries}")
+                import time
+                time.sleep(retry_delay)
+        
+        url = f"http://{host}:{port}"
+        logger.info(f"Constructed YFinance DB URL: {url}")
+        return url
+    
+    # Set the YFinance DB URL as a class variable
+    YFINANCE_DB_URL = None  # Will be set properly when class is loaded
+    # Initialize the URL using the classmethod
+    @classmethod
+    def _initialize_class(cls):
+        cls.YFINANCE_DB_URL = cls._get_yfinance_db_url()
+        logger.info(f"Using YFinance DB URL: {cls.YFINANCE_DB_URL}")
+        
+    # Call the initialization method when the class is loaded
+    _initialize_class = classmethod(_initialize_class)
     """
     Class for executing trades with Alpaca.
     """
@@ -22,6 +89,12 @@ class Trader:
         """
         Initialize the Trader class with Alpaca API.
         """
+        # Initialize run_id attribute
+        self.run_id = None
+        
+        # Dictionary to track last order time for each symbol
+        self.last_order_times = {}
+        
         # Log the API URLs for debugging
         logger.info(f"Initializing Trader with base URL: {config.ALPACA_BASE_URL}")
         
@@ -54,9 +127,34 @@ class Trader:
         
         # If force_initial_positions is True and we have no positions, create initial positions
         current_positions = {p.symbol: p for p in self.api.list_positions()}
-        
         # Get portfolio value from account info
         portfolio_value = float(account_info.get('portfolio_value', 100000.0))
+        
+        # Convert positions list to a dictionary for easier lookup
+        # This handles both Alpaca Position objects and YFinanceDBClient Position namedtuples
+        positions_dict = {}
+        for position in current_positions:
+            try:
+                # Try dictionary-like access first (for Alpaca API)
+                symbol = position['symbol']
+                positions_dict[symbol] = position
+            except (TypeError, KeyError):
+                # Fall back to attribute access (for namedtuples)
+                try:
+                    symbol = position.symbol
+                    positions_dict[symbol] = position
+                except AttributeError:
+                    logger.error(f"Unable to get symbol from position: {position}")
+                    continue
+        
+        # Replace current_positions with the dictionary for easier lookup
+        current_positions = positions_dict
+        
+        # Log detailed information about current positions
+        logger.info(f"Current positions details: {current_positions}")
+        for symbol, position in current_positions.items():
+            logger.info(f"Position for {symbol}: {position.qty} shares at avg price ${position.avg_entry_price}")
+        
         
         if force_initial_positions and len(current_positions) == 0:
             logger.info("No current positions found. Creating initial positions based on current signals.")
@@ -202,23 +300,45 @@ class Trader:
         current_positions = {p.symbol: p for p in self.api.list_positions()}
         
         # Process signals
+        logger.info(f"Processing {len(signals)} signals")
+        logger.info(f"Detailed signals: {signals}")
+        buy_signals = 0
+        sell_signals = 0
+        hold_signals = 0
+        
         for symbol, signal_data in signals.items():
             action = signal_data['action']
             price = signal_data['price']
             signal_changed = signal_data.get('signal_changed', False)
             
+            # Count signal types
+            if action == 'buy':
+                buy_signals += 1
+            elif action == 'sell':
+                sell_signals += 1
+            elif action == 'hold':
+                hold_signals += 1
+            
+            logger.info(f"Signal for {symbol}: {action} (changed: {signal_changed}, price: ${price:.2f})")
+            
             # Skip if no action
             if action == 'hold':
                 continue
                 
-            # Execute both buy and sell actions regardless of signal change
-            # This ensures we don't miss any trading opportunities
-            # Always execute signals regardless of whether they've changed
+            # Only execute signals if they've changed or if it's the first time we're seeing them
+            # This prevents duplicate orders from being placed for the same signal
             if action == 'buy':
-                logger.info(f"Processing buy signal for {symbol} (signal_changed: {signal_changed})")
+                # Use the run_id passed from the bot, or generate one if not available
+                run_id = self.run_id or f"trader-{id(self)}"
+                logger.info(f"[Run ID: {run_id}] Processing buy signal for {symbol} (signal_changed: {signal_changed})")
                 
-            logger.info(f"Processing {action} signal for {symbol} (signal_changed: {signal_changed})")
-                
+                # Skip if the signal hasn't changed - this prevents duplicate orders
+                if not signal_changed:
+                    logger.info(f"[Run ID: {run_id}] Skipping buy signal for {symbol} because signal hasn't changed")
+                    continue
+                    
+                logger.info(f"[Run ID: {run_id}] Processing {action} signal for {symbol} (signal_changed: {signal_changed})")
+                    
             try:
                 if action == 'buy':
                     # Check if we already have a position, but don't skip - update it if needed
@@ -258,6 +378,21 @@ class Trader:
                         continue
                         
                     # Place buy order
+                    # Log detailed information about the order being placed
+                    logger.info(f"[Run ID: {run_id}] About to place buy order for {symbol}: {qty} shares at ~${price:.2f}")
+                    
+                    # Track the last order time for this symbol to detect potential duplicates
+                    import time
+                    current_time = time.time()
+                    last_order_time = self.last_order_times.get(symbol, 0)
+                    time_since_last_order = current_time - last_order_time
+                    
+                    if time_since_last_order < 60:  # If less than 60 seconds since last order
+                        logger.warning(f"[Run ID: {run_id}] POTENTIAL DUPLICATE ORDER DETECTED: Placing order for {symbol} only {time_since_last_order:.2f} seconds after previous order")
+                    
+                    # Update the last order time for this symbol
+                    self.last_order_times[symbol] = current_time
+                    
                     order = self.api.submit_order(
                         symbol=symbol,
                         qty=qty,
@@ -266,17 +401,23 @@ class Trader:
                         time_in_force='day'
                     )
                     
-                    logger.info(f"Buy order placed for {qty} shares of {symbol} at ~${price:.2f}")
-                    executed_orders.append(self._format_order(order))
+                    formatted_order = self._format_order(order)
+                    logger.info(f"[Run ID: {self.run_id or 'unknown'}] Buy order placed for {qty} shares of {symbol} at ~${price:.2f}")
+                    logger.info(f"[Run ID: {self.run_id or 'unknown'}] Order details: ID={order.id}, Status={order.status}")
+                    executed_orders.append(formatted_order)
                     
                 elif action == 'sell':
                     # Skip if we don't have a position
                     if symbol not in current_positions:
                         logger.info(f"No position in {symbol}, skipping sell")
+                        logger.info(f"Current positions keys: {list(current_positions.keys())}")
+                        logger.info(f"Sell signal details: action={action}, signal={signal_data.get('signal')}, signal_changed={signal_changed}")
                         continue
-                        
+                    
+                    
                     # Get position quantity
                     position = current_positions[symbol]
+                    logger.info(f"Found position for {symbol} with {position.qty} shares, proceeding with sell")
                     qty = abs(int(position.qty))
                     
                     logger.info(f"Attempting to sell {qty} shares of {symbol} at ~${price:.2f}")
@@ -300,14 +441,18 @@ class Trader:
                         # Store the executed trade in the database
                         self.store_trade(formatted_order)
                         
-                        logger.info(f"Sell order successfully placed for {qty} shares of {symbol} at ~${price:.2f}")
-                        logger.info(f"Order details: ID={order.id}, Status={order.status}")
+                        logger.info(f"[Run ID: {self.run_id or 'unknown'}] Sell order successfully placed for {qty} shares of {symbol} at ~${price:.2f}")
+                        logger.info(f"[Run ID: {self.run_id or 'unknown'}] Order details: ID={order.id}, Status={order.status}")
                         executed_orders.append(formatted_order)
                     except Exception as e:
                         logger.error(f"Error placing sell order for {symbol}: {e}")
             
             except Exception as e:
                 logger.error(f"Error executing {action} order for {symbol}: {e}")
+        
+        # Log summary of processed signals
+        logger.info(f"Signal processing summary: {buy_signals} buy, {sell_signals} sell, {hold_signals} hold")
+        logger.info(f"Executed orders: {len(executed_orders)}")
                 
         return executed_orders
         
@@ -382,7 +527,10 @@ class Trader:
         """
         try:
             # Prepare data for API request
+            # Ensure we're using the class-level YFINANCE_DB_URL
             url = f"{self.YFINANCE_DB_URL}/trades"
+            logger.info(f"Using YFinance DB URL: {self.YFINANCE_DB_URL}")
+            logger.info(f"Attempting to store trade at URL: {url}")
             
             # Extract order data
             order_id = order.get('id')
@@ -402,8 +550,33 @@ class Trader:
                 'status': status
             }
             
+            logger.info(f"Trade parameters: {params}")
+            
+            # Add more detailed logging
+            logger.info(f"YFINANCE_DB_HOST: {os.getenv('YFINANCE_DB_HOST', 'not set')}")
+            logger.info(f"YFINANCE_DB_PORT: {os.getenv('YFINANCE_DB_PORT', 'not set')}")
+            logger.info(f"Class YFINANCE_DB_URL: {self.YFINANCE_DB_URL}")
+            logger.info(f"Running in Docker: {os.path.exists('/.dockerenv')}")
+            
             # Send request
-            response = requests.post(url, params=params, timeout=10)
+            logger.info(f"Sending POST request to {url} with params: {params}")
+            
+            try:
+                response = requests.post(url, params=params, timeout=10)
+            except requests.exceptions.ConnectionError as e:
+                logger.error(f"Connection error when storing trade: {e}")
+                # Try with an alternative URL if the main one fails
+                # First try with the Docker service name
+                alt_url = f"http://yfinance-db:8001/trades"
+                logger.info(f"Trying alternative URL: {alt_url}")
+                try:
+                    response = requests.post(alt_url, params=params, timeout=10)
+                except requests.exceptions.ConnectionError as e:
+                    logger.error(f"Connection error with alternative URL: {e}")
+                    # Try with localhost as a last resort
+                    last_resort_url = f"http://localhost:8001/trades"
+                    logger.info(f"Trying last resort URL: {last_resort_url}")
+                    response = requests.post(last_resort_url, params=params, timeout=10)
             
             if response.status_code == 200:
                 result = response.json()
@@ -416,6 +589,16 @@ class Trader:
                 
         except Exception as e:
             logger.error(f"Error storing executed trade: {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            logger.error(f"YFINANCE_DB_URL: {self.YFINANCE_DB_URL}")
+            logger.error(f"YFINANCE_DB_HOST: {self.YFINANCE_DB_HOST}")
+            logger.error(f"YFINANCE_DB_PORT: {self.YFINANCE_DB_PORT}")
+            logger.error(f"Environment variables:")
+            logger.error(f"  YFINANCE_DB_HOST: {os.getenv('YFINANCE_DB_HOST', 'not set')}")
+            logger.error(f"  YFINANCE_DB_PORT: {os.getenv('YFINANCE_DB_PORT', 'not set')}")
+            logger.error(f"Running in Docker: {os.path.exists('/.dockerenv')}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
             
     def _format_order(self, order):

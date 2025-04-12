@@ -1,65 +1,57 @@
-# ML Models Directory
+# Machine Learning Models for Alpaca Trader
 
-This directory is used to store trained machine learning models for the Alpaca Trading Bot.
+This directory contains trained machine learning models for the Alpaca Trading Bot.
 
-## Model Types
+## Available Models
 
-The following types of models may be stored here:
+The following models are available:
 
-- Supervised learning models (Random Forest, SVM, Neural Networks)
-- Reinforcement learning models
-- Deep learning models
-- NLP models
-- Ensemble models
+- `random_forest.joblib`: Random Forest model for predicting stock price movements
+- `gradient_boosting.joblib`: Gradient Boosting model (XGBoost/LightGBM) for predicting stock price movements
+- `ensemble.joblib`: Ensemble model combining multiple ML models
 
-## File Naming Convention
+## Training Models
 
-Models are saved with the following naming convention:
+To train a new model, use the `train_ml_model.py` script:
 
-```
-{model_type}_model.pkl
+```bash
+python train_ml_model.py --model-type random_forest --symbols AAPL MSFT GOOGL --period 1y
 ```
 
-For example:
-- `ensemble_model.pkl`
-- `supervised_model.pkl`
-- `reinforcement_model.pkl`
-- `nlp_model.pkl`
+### Command Line Arguments
 
-## Usage
+- `--model-type`: Type of ML model to train (random_forest, gradient_boosting, ensemble)
+- `--symbols`: Stock symbols to train on (default: symbols from config.py)
+- `--period`: Period of historical data to use (default: 1y)
+- `--lookback`: Number of days to look back for features (default: from config.py)
+- `--force`: Force retraining even if model exists
+- `--evaluate`: Evaluate model performance after training
+- `--plot`: Plot feature importance and model performance
 
-Models in this directory are automatically loaded by the MLStrategy class when the trading bot starts.
+## Using Models
 
-## Training New Models
+The models are automatically used by the `MLStrategy` class in `src/strategies.py`. To use a specific model, update the `ML_STRATEGY_TYPE` parameter in `config/config.py`.
 
-To train and save new models, you can use the functions in the `src/ml_models.py` module:
+## Model Performance
 
-```python
-from src.ml_models import get_ml_model, prepare_training_data
+Model performance metrics are logged during training and evaluation. You can view these metrics in the log files.
 
-# Prepare training data
-X_train, X_test, y_train, y_test = prepare_training_data(historical_data)
+Feature importance plots are saved to `logs/plots/` when using the `--plot` option.
 
-# Get a model
-model = get_ml_model('supervised')
+## Model Features
 
-# Train the model
-model.train(X_train, y_train)
+The models use the following features:
 
-# Evaluate the model
-metrics = model.evaluate(X_test, y_test)
-print(metrics)
+- Technical indicators (RSI, MACD, Bollinger Bands, etc.)
+- Price data (open, high, low, close)
+- Volume data
+- Moving averages
+- Volatility measures
 
-# Save the model
-model.save('models/supervised_model.pkl')
-```
+## Customizing Models
 
-## Future Enhancements
+To customize the models, you can modify the following files:
 
-Future enhancements to the ML capabilities may include:
-- Automated model retraining
-- Model versioning
-- A/B testing of different models
-- Hyperparameter optimization
-- Feature importance analysis
-- Model explainability tools
+- `src/ml_models.py`: Implementation of ML models
+- `src/feature_engineering.py`: Feature engineering for ML models
+- `config/config.py`: Configuration parameters for ML models

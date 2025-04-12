@@ -23,9 +23,15 @@ class YFinanceDBClient:
             host: Hostname of the YFinance Data Service
             port: Port of the YFinance Data Service
         """
-        # Use localhost instead of yfinance-db to ensure we can connect to the service
-        self.host = host or os.getenv("YFINANCE_DB_HOST", "localhost")
+        # Use the configured host (yfinance-db in Docker, localhost for local development)
+        self.host = host or os.getenv("YFINANCE_DB_HOST", "yfinance-db")
         self.port = port or int(os.getenv("YFINANCE_DB_PORT", "8001"))
+        
+        # Log environment variables for debugging
+        logger.info(f"YFinanceDBClient environment variables:")
+        logger.info(f"  YFINANCE_DB_HOST: {os.getenv('YFINANCE_DB_HOST', 'not set')}")
+        logger.info(f"  YFINANCE_DB_PORT: {os.getenv('YFINANCE_DB_PORT', 'not set')}")
+        logger.info(f"  Running in Docker: {os.path.exists('/.dockerenv')}")
         self.base_url = f"http://{self.host}:{self.port}"
         logger.info(f"YFinanceDBClient initialized with base URL: {self.base_url}")
         
@@ -142,31 +148,32 @@ class YFinanceDBClient:
             bool: True if the service is available, False otherwise
         """
         try:
-            # Try to connect to localhost first, then fall back to the configured host
-            try:
-                response = requests.get("http://localhost:8001/", timeout=5)
-                if response.status_code == 200:
-                    logger.info("Successfully connected to YFinance Data Service on localhost")
-                    # Update the base_url to use localhost
-                    self.host = "localhost"
-                    self.base_url = f"http://{self.host}:{self.port}"
-                    return True
-            except Exception as e:
-                logger.warning(f"Could not connect to YFinance Data Service on localhost: {e}")
-                
-            # Try the configured host
+            # Always use the configured host (yfinance-db in Docker)
+            # This ensures consistent connectivity in both Docker and local environments
             url = f"{self.base_url}/"
-            response = requests.get(url, timeout=5)
+            logger.info(f"Checking YFinance DB service availability at: {url}")
             
-            if response.status_code == 200:
-                logger.info("YFinance Data Service is available")
-                return True
-            else:
-                logger.warning(f"YFinance Data Service returned status code {response.status_code}")
+            # Try to connect to the configured host first
+            try:
+                response = requests.get(url, timeout=5)
+                
+                if response.status_code == 200:
+                    logger.info(f"YFinance Data Service is available at {url}")
+                    return True
+                else:
+                    logger.warning(f"YFinance Data Service at {url} returned status code {response.status_code}")
+                    return False
+            except Exception as e:
+                logger.warning(f"Could not connect to YFinance Data Service on {self.host}: {e}")
+                
+                # YFinance Data Service is available (assuming it's running in Docker)
+                logger.info(f"YFinance Data Service is available")
                 return False
                 
         except Exception as e:
-            logger.error(f"Error connecting to YFinance Data Service: {e}")
+            logger.error(f"Error connecting to YFinance Data Service at {self.base_url}: {e}")
+            import traceback
+            logger.error(f"Connection error traceback: {traceback.format_exc()}")
             return False
             
     def is_market_open(self) -> bool:

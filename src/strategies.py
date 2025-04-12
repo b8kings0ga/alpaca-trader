@@ -10,35 +10,9 @@ from datetime import datetime, timedelta
 from config import config
 from src.logger import get_logger
 from src.ml_models import get_ml_model, generate_ml_signals
+from src.strategy_base import Strategy
 
 logger = get_logger()
-
-class Strategy:
-    """
-    Base strategy class that all strategies should inherit from.
-    """
-    def __init__(self, name):
-        """
-        Initialize the strategy.
-        
-        Args:
-            name (str): Strategy name
-        """
-        self.name = name
-        logger.info(f"Strategy '{name}' initialized")
-    
-    def generate_signals(self, data):
-        """
-        Generate trading signals based on the strategy.
-        
-        Args:
-            data (dict): Dictionary of DataFrames with market data
-            
-        Returns:
-            dict: Dictionary of signals for each symbol
-        """
-        raise NotImplementedError("Subclasses must implement generate_signals()")
-
 
 class MovingAverageCrossover(Strategy):
     """
@@ -52,6 +26,18 @@ class MovingAverageCrossover(Strategy):
         Initialize the Moving Average Crossover strategy.
         """
         super().__init__("Moving Average Crossover")
+        # Reload the config to ensure we have the latest values
+        import importlib
+        importlib.reload(config)
+        
+        # Log the strategy parameters
+        logger.info(f"Initializing Moving Average Crossover strategy with parameters:")
+        logger.info(f"SHORT_WINDOW: {config.SHORT_WINDOW}")
+        logger.info(f"LONG_WINDOW: {config.LONG_WINDOW}")
+        logger.info(f"RSI_PERIOD: {config.RSI_PERIOD}")
+        logger.info(f"RSI_OVERSOLD: {config.RSI_OVERSOLD}")
+        logger.info(f"RSI_OVERBOUGHT: {config.RSI_OVERBOUGHT}")
+        
         self.short_window = config.SHORT_WINDOW
         self.long_window = config.LONG_WINDOW
         
@@ -88,25 +74,41 @@ class MovingAverageCrossover(Strategy):
             # Generate signals
             # Buy signal: short MA crosses above long MA
             df.loc[df['sma_short'] > df['sma_long'], 'signal'] = 1
+            buy_count = (df['signal'] == 1).sum()
+            logger.info(f"Generated {buy_count} buy signals for {symbol}")
             
             # Sell signal: short MA crosses below long MA
             df.loc[df['sma_short'] < df['sma_long'], 'signal'] = -1
+            sell_count = (df['signal'] == -1).sum()
+            logger.info(f"Generated {sell_count} sell signals for {symbol}")
+            logger.info(f"Last 5 rows of data for {symbol}:")
+            for i in range(min(5, len(df))):
+                idx = len(df) - 5 + i
+                if idx >= 0:
+                    row = df.iloc[idx]
+                    logger.info(f"  Row {idx}: sma_short={row['sma_short']:.2f}, sma_long={row['sma_long']:.2f}, signal={row['signal']}, close={row['close']:.2f}")
             
             # Get the latest signal
             latest_signal = df['signal'].iloc[-1]
+            logger.info(f"Latest signal for {symbol}: {latest_signal} ({self._get_action(latest_signal)})")
             
             # Check for crossover (signal change)
             signal_changed = False
             if len(df) >= 2:
                 prev_signal = df['signal'].iloc[-2]
                 signal_changed = prev_signal != latest_signal and latest_signal != 0
+                if signal_changed:
+                    logger.info(f"Signal changed for {symbol}: {prev_signal} -> {latest_signal} ({self._get_action(prev_signal)} -> {self._get_action(latest_signal)})")
             
             signals[symbol] = {
                 'action': self._get_action(latest_signal),
                 'signal': latest_signal,
                 'signal_changed': signal_changed,
                 'price': df['close'].iloc[-1],
-                'timestamp': df['timestamp'].iloc[-1]
+                'timestamp': df['timestamp'].iloc[-1],
+                'short_ma': df['sma_short'].iloc[-1],
+                'long_ma': df['sma_long'].iloc[-1],
+                'rsi': df['rsi'].iloc[-1] if 'rsi' in df.columns else None
             }
             
         return signals
@@ -190,6 +192,8 @@ class RSIStrategy(Strategy):
                 'signal_changed': signal_changed,
                 'price': df['close'].iloc[-1],
                 'rsi': df['rsi'].iloc[-1],
+                'short_ma': df['sma_short'].iloc[-1] if 'sma_short' in df.columns else None,
+                'long_ma': df['sma_long'].iloc[-1] if 'sma_long' in df.columns else None,
                 'timestamp': df['timestamp'].iloc[-1]
             }
             
@@ -211,37 +215,30 @@ class RSIStrategy(Strategy):
             return 'sell'
         else:
             return 'hold'
+
 class MLStrategy(Strategy):
     """
     Machine Learning based strategy.
     
-    This is a placeholder for future ML-based strategy implementations.
+    This strategy uses machine learning models to predict price movements and generate trading signals.
+    Currently supports the following models:
+    - Random Forest
+    - Gradient Boosting (XGBoost/LightGBM)
     
-    TODO: Implement ML-based trading strategies here. Potential approaches include:
-    - Supervised learning models (Random Forest, SVM, Neural Networks)
-    - Reinforcement learning for dynamic strategy optimization
-    - Deep learning for pattern recognition in price data
-    - Natural Language Processing for sentiment analysis of news/social media
-    - Ensemble methods combining multiple ML models
-    
-    For implementation, consider:
-    1. Feature engineering from price data and technical indicators
-    2. Model training and validation pipeline
-    3. Hyperparameter optimization
-    4. Backtesting framework for ML models
-    5. Online learning capabilities for model updates
+    The models are trained on historical price data and technical indicators to predict
+    future price movements. The predictions are then converted to trading signals.
     """
     def __init__(self, model_type=None):
         """
         Initialize the ML strategy.
         
         Args:
-            model_type (str): Type of ML model to use
+            model_type (str): Type of ML model to use ('random_forest', 'gradient_boosting')
         """
         super().__init__("ML Strategy")
         self.model_type = model_type or config.ML_STRATEGY_TYPE
         self.model = None
-        self.model_path = os.path.join("models", f"{self.model_type}_model.pkl")
+        self.model_path = os.path.join("models", f"{self.model_type}.joblib")
         
         # Try to load a pre-trained model if it exists
         self._load_model()
@@ -270,16 +267,14 @@ class MLStrategy(Strategy):
         """
         Generate trading signals based on ML models.
         
-        This is a placeholder implementation that uses the ml_models module.
-        
         Args:
             data (dict): Dictionary of DataFrames with market data
             
         Returns:
             dict: Dictionary of signals for each symbol
         """
-        if not self.model:
-            logger.warning("No ML model available - returning 'hold' signals")
+        if not self.model or not self.model.is_trained:
+            logger.warning("No trained ML model available - returning 'hold' signals")
             signals = {}
             
             for symbol, df in data.items():
@@ -292,14 +287,47 @@ class MLStrategy(Strategy):
                     'signal_changed': False,
                     'price': df['close'].iloc[-1] if not df.empty else 0,
                     'timestamp': df['timestamp'].iloc[-1] if not df.empty else None,
-                    'ml_confidence': 0.5  # Placeholder for ML confidence score
+                    'short_ma': df['sma_short'].iloc[-1] if not df.empty and 'sma_short' in df.columns else None,
+                    'long_ma': df['sma_long'].iloc[-1] if not df.empty and 'sma_long' in df.columns else None,
+                    'rsi': df['rsi'].iloc[-1] if not df.empty and 'rsi' in df.columns else None,
+                    'ml_confidence': 0.5  # Default confidence score
                 }
                 
             return signals
         
         # Use the ml_models module to generate signals
         try:
-            return generate_ml_signals(self.model, data)
+            ml_signals = generate_ml_signals(self.model, data)
+            
+            # Process signals to add signal_changed flag
+            signals = {}
+            for symbol, signal_data in ml_signals.items():
+                if symbol not in data or data[symbol].empty:
+                    continue
+                    
+                df = data[symbol]
+                
+                # Check for signal change
+                signal_changed = False
+                current_signal = signal_data['signal']
+                
+                # Create a new signal entry with additional information
+                signals[symbol] = {
+                    'action': signal_data['action'],
+                    'signal': current_signal,
+                    'signal_changed': signal_changed,
+                    'price': signal_data['price'],
+                    'timestamp': signal_data['timestamp'],
+                    'short_ma': df['sma_short'].iloc[-1] if 'sma_short' in df.columns else None,
+                    'long_ma': df['sma_long'].iloc[-1] if 'sma_long' in df.columns else None,
+                    'rsi': df['rsi'].iloc[-1] if 'rsi' in df.columns else None,
+                    'ml_confidence': signal_data.get('ml_confidence', 0.5)
+                }
+                
+                logger.info(f"ML Strategy signal for {symbol}: {signals[symbol]['action']} (confidence: {signals[symbol]['ml_confidence']:.2f})")
+                
+            return signals
+            
         except Exception as e:
             logger.error(f"Error generating ML signals: {e}")
             return {}
@@ -455,9 +483,13 @@ class DualMovingAverageYF(Strategy):
             # Generate signals
             # Buy signal: short MA crosses above long MA
             df.loc[df['sma_short'] > df['sma_long'], 'signal'] = 1
+            buy_count = (df['signal'] == 1).sum()
+            logger.info(f"DualMA: Generated {buy_count} buy signals for {symbol}")
             
             # Sell signal: short MA crosses below long MA
             df.loc[df['sma_short'] < df['sma_long'], 'signal'] = -1
+            sell_count = (df['signal'] == -1).sum()
+            logger.info(f"DualMA: Generated {sell_count} sell signals for {symbol}")
             
             # Get the latest signal
             latest_signal = df['signal'].iloc[-1]
@@ -475,7 +507,8 @@ class DualMovingAverageYF(Strategy):
                 'price': df['close'].iloc[-1],
                 'timestamp': df['timestamp'].iloc[-1],
                 'short_ma': df['sma_short'].iloc[-1],
-                'long_ma': df['sma_long'].iloc[-1]
+                'long_ma': df['sma_long'].iloc[-1],
+                'rsi': df['rsi'].iloc[-1] if 'rsi' in df.columns else None
             }
             
         return signals
@@ -513,8 +546,13 @@ def get_strategy(strategy_name):
         'moving_average_crossover': MovingAverageCrossover,
         'rsi': RSIStrategy,
         'ml': MLStrategy,  # Added ML strategy placeholder
-        'dual_ma_yf': DualMovingAverageYF  # Added Dual Moving Average with yfinance
+        'dual_ma_yf': DualMovingAverageYF,  # Added Dual Moving Average with yfinance
     }
+    
+    # Import EnsembleMLStrategy here to avoid circular imports
+    if strategy_name.lower() == 'ensemble_ml':
+        from src.ensemble_ml_strategy import EnsembleMLStrategy
+        return EnsembleMLStrategy()
     
     strategy_class = strategies.get(strategy_name.lower())
     if not strategy_class:

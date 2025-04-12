@@ -1,301 +1,275 @@
 """
 Machine Learning models for the Alpaca Trading Bot.
 
-This module contains placeholder implementations for future ML-based trading strategies.
-It serves as a template and guide for implementing ML models for trading.
+This module contains implementations of ML-based trading strategies.
 """
+import os
 import numpy as np
 import pandas as pd
+import joblib
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+
 from config import config
 from src.logger import get_logger
+from src.feature_engineering import add_technical_indicators, create_target_variable
 
 logger = get_logger()
 
 class MLModel:
-    """
-    Base class for ML models.
-    
-    This is a placeholder for future ML model implementations.
-    """
+    """Base class for ML models."""
     def __init__(self, name):
-        """
-        Initialize the ML model.
-        
-        Args:
-            name (str): Model name
-        """
         self.name = name
         self.model = None
         self.is_trained = False
-        logger.info(f"ML Model '{name}' initialized (placeholder)")
+        self.scaler = StandardScaler()
+        self.feature_names = []
+        logger.info(f"ML Model '{name}' initialized")
         
     def preprocess_data(self, data):
-        """
-        Preprocess data for ML model.
-        
-        Args:
-            data (DataFrame): Raw market data
+        if data is None or data.empty:
+            return None, None
             
-        Returns:
-            tuple: X (features), y (targets)
-        """
-        logger.warning("Using placeholder implementation of preprocess_data")
-        return None, None
+        # Add technical indicators
+        data = add_technical_indicators(data)
+            
+        # Create target variable
+        data['target'] = create_target_variable(data)
+            
+        # Drop rows with NaN values
+        data = data.dropna()
+        
+        if data.empty:
+            return None, None
+            
+        # Select features
+        features = config.ML_FEATURES
+        self.feature_names = features
+        
+        # Check if all features exist in the dataframe
+        missing_features = [f for f in features if f not in data.columns]
+        if missing_features:
+            logger.warning(f"Missing features: {missing_features}")
+            features = [f for f in features if f in data.columns]
+            
+        if not features:
+            logger.error("No valid features found")
+            return None, None
+            
+        # Extract features and target
+        X = data[features].values
+        y = data['target'].values
+        
+        # Scale features
+        X = self.scaler.fit_transform(X)
+        
+        return X, y
         
     def train(self, X, y):
-        """
-        Train the ML model.
-        
-        Args:
-            X (array-like): Features
-            y (array-like): Targets
+        if X is None or y is None or len(X) == 0 or len(y) == 0:
+            return False
             
-        Returns:
-            bool: True if training was successful, False otherwise
-        """
-        logger.warning("Using placeholder implementation of train")
-        return False
+        try:
+            # Split data
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=42, shuffle=False
+            )
+            
+            # Train model
+            self._train_model(X_train, y_train)
+            
+            # Evaluate model
+            metrics = self.evaluate(X_test, y_test)
+            logger.info(f"Model metrics: {metrics}")
+            
+            self.is_trained = True
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error training model: {e}")
+            return False
+            
+    def _train_model(self, X_train, y_train):
+        raise NotImplementedError("Subclasses must implement _train_model()")
         
     def predict(self, X):
-        """
-        Make predictions with the ML model.
-        
-        Args:
-            X (array-like): Features
+        if not self.is_trained or self.model is None:
+            return np.zeros(len(X) if hasattr(X, '__len__') else 1)
             
-        Returns:
-            array-like: Predictions
-        """
-        logger.warning("Using placeholder implementation of predict")
-        return np.zeros(len(X) if hasattr(X, '__len__') else 1)
+        try:
+            X_scaled = self.scaler.transform(X)
+            return self._predict_model(X_scaled)
+            
+        except Exception as e:
+            logger.error(f"Error making predictions: {e}")
+            return np.zeros(len(X) if hasattr(X, '__len__') else 1)
+            
+    def _predict_model(self, X_scaled):
+        raise NotImplementedError("Subclasses must implement _predict_model()")
+        
+    def predict_proba(self, X):
+        if not self.is_trained or self.model is None:
+            return np.zeros((len(X) if hasattr(X, '__len__') else 1, 3))
+            
+        try:
+            X_scaled = self.scaler.transform(X)
+            return self._predict_proba_model(X_scaled)
+            
+        except Exception as e:
+            logger.error(f"Error making probability predictions: {e}")
+            return np.zeros((len(X) if hasattr(X, '__len__') else 1, 3))
+            
+    def _predict_proba_model(self, X_scaled):
+        try:
+            return self.model.predict_proba(X_scaled)
+        except:
+            # If model doesn't support predict_proba, return one-hot encoded predictions
+            preds = self._predict_model(X_scaled)
+            proba = np.zeros((len(X_scaled), 3))
+            for i, p in enumerate(preds):
+                if p == -1:
+                    proba[i, 0] = 1.0
+                elif p == 0:
+                    proba[i, 1] = 1.0
+                else:
+                    proba[i, 2] = 1.0
+            return proba
         
     def evaluate(self, X, y):
-        """
-        Evaluate the ML model.
-        
-        Args:
-            X (array-like): Features
-            y (array-like): Targets
+        if not self.is_trained or self.model is None:
+            return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0}
             
-        Returns:
-            dict: Evaluation metrics
-        """
-        logger.warning("Using placeholder implementation of evaluate")
-        return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0}
-        
+        try:
+            X_scaled = self.scaler.transform(X)
+            y_pred = self._predict_model(X_scaled)
+            
+            metrics = {
+                'accuracy': accuracy_score(y, y_pred),
+                'precision': precision_score(y, y_pred, average='weighted', zero_division=0),
+                'recall': recall_score(y, y_pred, average='weighted', zero_division=0),
+                'f1': f1_score(y, y_pred, average='weighted', zero_division=0)
+            }
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Error evaluating model: {e}")
+            return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0}
+            
     def save(self, path):
-        """
-        Save the ML model.
-        
-        Args:
-            path (str): Path to save the model
+        if not self.is_trained or self.model is None:
+            return False
             
-        Returns:
-            bool: True if saving was successful, False otherwise
-        """
-        logger.warning("Using placeholder implementation of save")
-        return False
-        
-    def load(self, path):
-        """
-        Load the ML model.
-        
-        Args:
-            path (str): Path to load the model from
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             
-        Returns:
-            bool: True if loading was successful, False otherwise
-        """
-        logger.warning("Using placeholder implementation of load")
-        return False
-
-
-class SupervisedModel(MLModel):
-    """
-    Supervised learning model for trading.
-    
-    This is a placeholder for future supervised learning model implementations.
-    Potential models include:
-    - Random Forest
-    - Support Vector Machines
-    - Gradient Boosting (XGBoost, LightGBM)
-    - Neural Networks
-    """
-    def __init__(self, model_type='random_forest'):
-        """
-        Initialize the supervised learning model.
-        
-        Args:
-            model_type (str): Type of supervised model
-        """
-        super().__init__(f"Supervised-{model_type}")
-        self.model_type = model_type
-        
-    def feature_engineering(self, df):
-        """
-        Create features for the supervised model.
-        
-        Args:
-            df (DataFrame): Market data
+            model_data = {
+                'model': self.model,
+                'scaler': self.scaler,
+                'feature_names': self.feature_names,
+                'is_trained': self.is_trained,
+                'name': self.name
+            }
             
-        Returns:
-            DataFrame: DataFrame with engineered features
-        """
-        logger.warning("Using placeholder implementation of feature_engineering")
-        return df
-
-
-class ReinforcementLearningModel(MLModel):
-    """
-    Reinforcement learning model for trading.
-    
-    This is a placeholder for future RL model implementations.
-    Potential approaches include:
-    - Q-Learning
-    - Deep Q Networks (DQN)
-    - Proximal Policy Optimization (PPO)
-    - Actor-Critic methods
-    """
-    def __init__(self, model_type='dqn'):
-        """
-        Initialize the reinforcement learning model.
-        
-        Args:
-            model_type (str): Type of RL model
-        """
-        super().__init__(f"RL-{model_type}")
-        self.model_type = model_type
-        self.env = None
-        
-    def define_environment(self, data):
-        """
-        Define the trading environment for RL.
-        
-        Args:
-            data (DataFrame): Market data
-            
-        Returns:
-            object: Trading environment
-        """
-        logger.warning("Using placeholder implementation of define_environment")
-        return None
-        
-    def train_agent(self, env, episodes=100):
-        """
-        Train the RL agent.
-        
-        Args:
-            env (object): Trading environment
-            episodes (int): Number of episodes to train for
-            
-        Returns:
-            bool: True if training was successful, False otherwise
-        """
-        logger.warning("Using placeholder implementation of train_agent")
-        return False
-
-
-class NLPModel(MLModel):
-    """
-    Natural Language Processing model for trading.
-    
-    This is a placeholder for future NLP model implementations.
-    Potential approaches include:
-    - Sentiment analysis of news
-    - Topic modeling of financial reports
-    - Named entity recognition for company/sector analysis
-    """
-    def __init__(self, model_type='sentiment'):
-        """
-        Initialize the NLP model.
-        
-        Args:
-            model_type (str): Type of NLP model
-        """
-        super().__init__(f"NLP-{model_type}")
-        self.model_type = model_type
-        
-    def preprocess_text(self, text):
-        """
-        Preprocess text data.
-        
-        Args:
-            text (str or list): Text data
-            
-        Returns:
-            object: Preprocessed text
-        """
-        logger.warning("Using placeholder implementation of preprocess_text")
-        return text
-
-
-class EnsembleModel(MLModel):
-    """
-    Ensemble model combining multiple ML models.
-    
-    This is a placeholder for future ensemble model implementations.
-    Potential approaches include:
-    - Voting ensemble
-    - Stacking ensemble
-    - Weighted ensemble
-    """
-    def __init__(self, models=None):
-        """
-        Initialize the ensemble model.
-        
-        Args:
-            models (list): List of ML models to ensemble
-        """
-        super().__init__("Ensemble")
-        self.models = models or []
-        
-    def add_model(self, model):
-        """
-        Add a model to the ensemble.
-        
-        Args:
-            model (MLModel): Model to add
-            
-        Returns:
-            bool: True if model was added successfully
-        """
-        if isinstance(model, MLModel):
-            self.models.append(model)
+            joblib.dump(model_data, path)
             return True
-        return False
-        
-    def ensemble_predictions(self, predictions):
-        """
-        Combine predictions from multiple models.
-        
-        Args:
-            predictions (list): List of predictions from different models
             
-        Returns:
-            array-like: Ensembled predictions
-        """
-        logger.warning("Using placeholder implementation of ensemble_predictions")
-        if not predictions:
-            return np.array([])
-        return np.mean(predictions, axis=0)
+        except Exception as e:
+            logger.error(f"Error saving model: {e}")
+            return False
+            
+    def load(self, path):
+        try:
+            if not os.path.exists(path):
+                return False
+                
+            model_data = joblib.load(path)
+            
+            self.model = model_data['model']
+            self.scaler = model_data['scaler']
+            self.feature_names = model_data['feature_names']
+            self.is_trained = model_data['is_trained']
+            self.name = model_data['name']
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error loading model: {e}")
+            return False
+            
+    def get_feature_importance(self):
+        if not self.is_trained or self.model is None:
+            return {}
+            
+        try:
+            # Get feature importance
+            if hasattr(self.model, 'feature_importances_'):
+                importance = self.model.feature_importances_
+            elif hasattr(self.model, 'coef_'):
+                importance = np.abs(self.model.coef_[0])
+            else:
+                return {}
+                
+            # Create dictionary of feature importance
+            feature_importance = {}
+            for i, feature in enumerate(self.feature_names):
+                if i < len(importance):
+                    feature_importance[feature] = float(importance[i])
+                
+            return feature_importance
+            
+        except Exception as e:
+            logger.error(f"Error getting feature importance: {e}")
+            return {}
 
 
-# Factory function to get ML model by type
-def get_ml_model(model_type='ensemble'):
-    """
-    Get ML model instance by type.
-    
-    Args:
-        model_type (str): Model type
+class RandomForestModel(MLModel):
+    """Random Forest model for trading."""
+    def __init__(self):
+        super().__init__("RandomForest")
         
-    Returns:
-        MLModel: ML model instance
-    """
+    def _train_model(self, X_train, y_train):
+        self.model = RandomForestClassifier(
+            n_estimators=config.RF_N_ESTIMATORS,
+            max_depth=config.RF_MAX_DEPTH,
+            random_state=config.RF_RANDOM_STATE
+        )
+        
+        self.model.fit(X_train, y_train)
+        
+    def _predict_model(self, X_scaled):
+        return self.model.predict(X_scaled)
+
+
+class GradientBoostingModel(MLModel):
+    """Gradient Boosting model for trading."""
+    def __init__(self, library='sklearn'):
+        super().__init__(f"GradientBoosting-{library}")
+        self.library = library
+        
+    def _train_model(self, X_train, y_train):
+        self.model = GradientBoostingClassifier(
+            learning_rate=config.GB_LEARNING_RATE,
+            max_depth=config.GB_MAX_DEPTH,
+            n_estimators=config.GB_N_ESTIMATORS,
+            subsample=config.GB_SUBSAMPLE,
+            random_state=config.GB_RANDOM_STATE
+        )
+            
+        self.model.fit(X_train, y_train)
+        
+    def _predict_model(self, X_scaled):
+        return self.model.predict(X_scaled)
+
+
+def get_ml_model(model_type='random_forest'):
+    """Get ML model instance by type."""
     models = {
-        'supervised': SupervisedModel,
-        'reinforcement': ReinforcementLearningModel,
-        'nlp': NLPModel,
-        'ensemble': EnsembleModel
+        'gradient_boosting': GradientBoostingModel,
+        'random_forest': RandomForestModel
     }
     
     model_class = models.get(model_type.lower())
@@ -306,61 +280,114 @@ def get_ml_model(model_type='ensemble'):
     return model_class()
 
 
-# TODO: Implement these functions for ML-based trading
-def prepare_training_data(historical_data, lookback_period=None):
-    """
-    Prepare training data for ML models.
-    
-    Args:
-        historical_data (dict): Dictionary of DataFrames with historical market data
-        lookback_period (int): Number of days to look back for features
-        
-    Returns:
-        tuple: X_train, X_test, y_train, y_test
-    """
-    lookback_period = lookback_period or config.ML_LOOKBACK_PERIOD
-    logger.warning("Using placeholder implementation of prepare_training_data")
-    return None, None, None, None
-
 def train_ml_model(model_type=None):
-    """
-    Train an ML model for trading.
-    
-    Args:
-        model_type (str): Type of ML model to train
-        
-    Returns:
-        MLModel: Trained ML model
-    """
+    """Train an ML model for trading."""
     model_type = model_type or config.ML_STRATEGY_TYPE
-    logger.warning("Using placeholder implementation of train_ml_model")
-    return get_ml_model(model_type)
+    
+    # Get model instance
+    model = get_ml_model(model_type)
+    
+    if model is None:
+        logger.error(f"Failed to create model of type '{model_type}'")
+        return None
+    
+    # Get historical data
+    from src.yfinance_data import YFinanceData
+    yf_data = YFinanceData()
+    historical_data = yf_data.get_historical_data(config.SYMBOLS, period='1y')
+    
+    # Prepare data
+    all_X = []
+    all_y = []
+    
+    for symbol, df in historical_data.items():
+        X, y = model.preprocess_data(df)
+        
+        if X is not None and y is not None:
+            all_X.append(X)
+            all_y.append(y)
+            
+    if not all_X or not all_y:
+        logger.error("No valid data for training")
+        return None
+        
+    # Combine data
+    X = np.vstack(all_X)
+    y = np.concatenate(all_y)
+    
+    # Train model
+    success = model.train(X, y)
+    
+    if not success:
+        logger.error("Failed to train model")
+        return None
+        
+    # Save model
+    model_path = f"models/{model_type}.joblib"
+    model.save(model_path)
+    logger.info(f"Model saved to {model_path}")
+    
+    return model
+
 
 def generate_ml_signals(model, data):
-    """
-    Generate trading signals using an ML model.
-    
-    Args:
-        model (MLModel): ML model
-        data (dict): Dictionary of DataFrames with market data
+    """Generate trading signals using an ML model."""
+    if model is None or not model.is_trained:
+        return {}
         
-    Returns:
-        dict: Dictionary of signals for each symbol
-    """
-    logger.warning("Using placeholder implementation of generate_ml_signals")
     signals = {}
     
     for symbol, df in data.items():
         if df.empty:
             continue
             
+        # Add technical indicators
+        df = add_technical_indicators(df)
+        
+        # Drop rows with NaN values
+        df = df.dropna()
+        
+        if df.empty:
+            continue
+            
+        # Extract features
+        features = [f for f in config.ML_FEATURES if f in df.columns]
+        
+        if not features:
+            continue
+            
+        X = df[features].values[-1:] # Get the most recent data point
+        
+        # Scale features
+        X_scaled = model.scaler.transform(X)
+        
+        # Make predictions
+        prediction = model._predict_model(X_scaled)[0]
+        
+        # Get prediction probabilities if available
+        try:
+            proba = model._predict_proba_model(X_scaled)[0]
+            confidence = max(proba)
+        except:
+            confidence = 0.5
+        
+        # Determine action
+        if prediction == 1:
+            action = 'buy'
+            signal = 1
+        elif prediction == -1:
+            action = 'sell'
+            signal = -1
+        else:
+            action = 'hold'
+            signal = 0
+            
         signals[symbol] = {
-            'action': 'hold',
-            'signal': 0,
-            'signal_changed': False,
+            'action': action,
+            'signal': signal,
             'price': df['close'].iloc[-1],
             'timestamp': df['timestamp'].iloc[-1],
-            'ml_confidence': 0.5
+            'ml_confidence': confidence
         }
         
     return signals
