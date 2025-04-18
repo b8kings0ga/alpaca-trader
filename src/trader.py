@@ -96,6 +96,9 @@ class Trader:
         # Dictionary to track last order time for each symbol
         self.last_order_times = {}
         
+        # Dictionary to store unexecuted buy signals for later processing
+        self.pending_buy_signals = {}
+        
         # Log the API URLs for debugging
         logger.info(f"Initializing Trader with base URL: {config.ALPACA_BASE_URL}")
         
@@ -300,11 +303,20 @@ class Trader:
                     except Exception as e:
                         logger.error(f"Error creating initial position for {symbol}: {e}")
         
-        # Check if we have enough buying power
+        # Get buying power information
         buying_power = float(account_info.get('buying_power', 0))
-        if buying_power <= 0:
-            logger.warning(f"Not enough buying power: {buying_power}")
-            return executed_orders
+        logger.info(f"Current buying power: ${buying_power:.2f}")
+        
+        # Check if we have any pending buy signals from previous runs
+        if self.pending_buy_signals:
+            logger.info(f"Found {len(self.pending_buy_signals)} pending buy signals from previous run")
+            # Add pending buy signals to current signals if they don't already exist
+            for symbol, signal_data in self.pending_buy_signals.items():
+                if symbol not in signals:
+                    signals[symbol] = signal_data
+                    logger.info(f"Added pending buy signal for {symbol} to current signals")
+            # Clear pending signals as they've been added to the current batch
+            self.pending_buy_signals = {}
             
         # Calculate position size
         portfolio_value = float(account_info.get('portfolio_value', 0))
@@ -319,27 +331,118 @@ class Trader:
         # Refresh positions
         current_positions = {p.symbol: p for p in self.api.list_positions()}
         
-        # Process signals
-        logger.info(f"Processing {len(signals)} signals")
-        logger.info(f"Detailed signals: {signals}")
-        buy_signals = 0
-        sell_signals = 0
-        hold_signals = 0
+        # Separate signals into buy and sell
+        buy_signal_dict = {}
+        sell_signal_dict = {}
+        hold_signal_count = 0
         
         for symbol, signal_data in signals.items():
+            action = signal_data['action']
+            if action == 'buy':
+                buy_signal_dict[symbol] = signal_data
+            elif action == 'sell':
+                sell_signal_dict[symbol] = signal_data
+            else:  # hold
+                hold_signal_count += 1
+        
+        logger.info(f"Signal breakdown: {len(buy_signal_dict)} buy, {len(sell_signal_dict)} sell, {hold_signal_count} hold")
+        
+        # Process sell signals first to free up buying power
+        logger.info(f"Processing {len(sell_signal_dict)} sell signals first")
+        for symbol, signal_data in sell_signal_dict.items():
+            try:
+                action = signal_data['action']
+                price = signal_data['price']
+                signal_changed = signal_data.get('signal_changed', False)
+                
+                logger.info(f"Processing sell signal for {symbol}: (changed: {signal_changed}, price: ${price:.2f})")
+                
+                # Skip if we don't have a position
+                if symbol not in current_positions:
+                    logger.info(f"No position in {symbol}, skipping sell")
+                    continue
+                
+                # Get position quantity
+                position = current_positions[symbol]
+                logger.info(f"Found position for {symbol} with {position.qty} shares, proceeding with sell")
+                qty = abs(int(position.qty))
+                
+                logger.info(f"Attempting to sell {qty} shares of {symbol} at ~${price:.2f}")
+                
+                try:
+                    # Store the signal in the database
+                    signal_id = self.store_signal(symbol, signal_data)
+                    
+                    # Place sell order
+                    order = self.api.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side='sell',
+                        type='market',
+                        time_in_force='day'
+                    )
+                    
+                    # Format the order for storage and logging
+                    formatted_order = self._format_order(order)
+                    
+                    logger.info(f"[Run ID: {self.run_id or 'unknown'}] Sell order successfully placed for {qty} shares of {symbol} at ~${price:.2f}")
+                    logger.info(f"[Run ID: {self.run_id or 'unknown'}] Order details: ID={order.id}, Status={order.status}")
+                    
+                    # Verify order status by fetching it again from Alpaca
+                    try:
+                        # Wait a moment for the order to be processed
+                        time.sleep(1)
+                        fetched_order = self.api.get_order(order.id)
+                        logger.info(f"[Run ID: {self.run_id or 'unknown'}] Verified sell order status from Alpaca: ID={fetched_order.id}, Status={fetched_order.status}")
+                        
+                        # Update the order status in our formatted order
+                        formatted_order['status'] = fetched_order.status
+                        
+                        # Only store the trade if the order is executable
+                        if self._is_order_executable(fetched_order):
+                            logger.info(f"[Run ID: {self.run_id or 'unknown'}] Sell order is executable (status: {fetched_order.status}), storing in database")
+                            trade_id = self.store_trade(formatted_order)
+                            logger.info(f"[Run ID: {self.run_id or 'unknown'}] Trade stored in database with ID: {trade_id}")
+                        else:
+                            logger.warning(f"[Run ID: {self.run_id or 'unknown'}] Sell order is not executable (status: {fetched_order.status}), not storing in database")
+                    except Exception as e:
+                        logger.error(f"[Run ID: {self.run_id or 'unknown'}] Error verifying sell order status from Alpaca: {e}")
+                    
+                    executed_orders.append(formatted_order)
+                    
+                    # Update buying power after sell
+                    try:
+                        updated_account = self.api.get_account()
+                        buying_power = float(updated_account.buying_power)
+                        logger.info(f"Updated buying power after sell: ${buying_power:.2f}")
+                    except Exception as e:
+                        logger.error(f"Error updating buying power after sell: {e}")
+                        
+                except Exception as e:
+                    logger.error(f"Error placing sell order for {symbol}: {e}")
+            except Exception as e:
+                logger.error(f"Error processing sell signal for {symbol}: {e}")
+        
+        # Now process buy signals with the updated buying power
+        logger.info(f"Processing {len(buy_signal_dict)} buy signals with buying power: ${buying_power:.2f}")
+        
+        # Refresh account info to get updated buying power after sells
+        try:
+            account = self.api.get_account()
+            buying_power = float(account.buying_power)
+            logger.info(f"Refreshed buying power after processing sells: ${buying_power:.2f}")
+        except Exception as e:
+            logger.error(f"Error refreshing account info: {e}")
+        
+        # Process buy signals
+        buy_signals_processed = 0
+        buy_signals_pending = 0
+        for symbol, signal_data in buy_signal_dict.items():
             action = signal_data['action']
             price = signal_data['price']
             signal_changed = signal_data.get('signal_changed', False)
             
-            # Count signal types
-            if action == 'buy':
-                buy_signals += 1
-            elif action == 'sell':
-                sell_signals += 1
-            elif action == 'hold':
-                hold_signals += 1
-            
-            logger.info(f"Signal for {symbol}: {action} (changed: {signal_changed}, price: ${price:.2f})")
+            logger.info(f"Processing buy signal for {symbol}: (changed: {signal_changed}, price: ${price:.2f})")
             
             # Skip if no action
             if action == 'hold':
@@ -360,7 +463,20 @@ class Trader:
                 logger.info(f"[Run ID: {run_id}] Processing {action} signal for {symbol} (signal_changed: {signal_changed})")
                     
             try:
-                if action == 'buy':
+                # Check if we have enough buying power for this buy order
+                # Calculate quantity based on position size and current price
+                qty = int(position_value / price)
+                estimated_cost = qty * price
+                
+                if estimated_cost > buying_power:
+                    logger.warning(f"Not enough buying power (${buying_power:.2f}) for buy order of {symbol} (estimated cost: ${estimated_cost:.2f})")
+                    logger.info(f"Storing buy signal for {symbol} for later processing")
+                    # Store the signal for later processing
+                    self.pending_buy_signals[symbol] = signal_data
+                    buy_signals_pending += 1
+                    continue
+                
+                # We have enough buying power to proceed with the buy
                     # Check if we already have a position, but don't skip - update it if needed
                     if symbol in current_positions:
                         position = current_positions[symbol]
@@ -395,6 +511,7 @@ class Trader:
                                     
                                     logger.info(f"Additional buy order placed for {additional_qty} shares of {symbol} at ~${price:.2f}")
                                     executed_orders.append(formatted_order)
+                                    buy_signals_processed += 1
                                 except Exception as e:
                                     logger.error(f"Error placing additional buy order for {symbol}: {e}")
                         else:
@@ -476,6 +593,7 @@ class Trader:
                         logger.warning(f"[Run ID: {self.run_id or 'unknown'}] Order was not accepted by Alpaca (status: {order.status}), not storing in database")
                     
                     executed_orders.append(formatted_order)
+                    buy_signals_processed += 1
                     
                 elif action == 'sell':
                     # Skip if we don't have a position
@@ -540,8 +658,9 @@ class Trader:
                 logger.error(f"Error executing {action} order for {symbol}: {e}")
         
         # Log summary of processed signals
-        logger.info(f"Signal processing summary: {buy_signals} buy, {sell_signals} sell, {hold_signals} hold")
+        logger.info(f"Signal processing summary: {buy_signals_processed} buy processed, {buy_signals_pending} buy pending, {len(sell_signal_dict)} sell, {hold_signal_count} hold")
         logger.info(f"Executed orders: {len(executed_orders)}")
+        logger.info(f"Pending buy signals for next run: {len(self.pending_buy_signals)}")
                 
         return executed_orders
         
