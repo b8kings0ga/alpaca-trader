@@ -186,6 +186,43 @@ class TradingScheduler:
         
         return job_id
         
+    def add_market_close_job(self, job_func, job_id=None):
+        """
+        Add a job that runs at market close.
+        
+        Args:
+            job_func: Function to execute
+            job_id (str): Job ID
+            
+        Returns:
+            str: Job ID
+        """
+        if not job_id:
+            job_id = f"market_close_job_{int(time.time())}"
+            
+        # Remove existing job with the same ID if it exists
+        self.remove_job(job_id)
+        
+        # Parse the market close time
+        hour, minute = map(int, config.MARKET_CLOSE_TIME.split(':'))
+        
+        # Add the job with a cron trigger
+        self.scheduler.add_job(
+            job_func,
+            CronTrigger(
+                day_of_week='mon-fri',
+                hour=hour,
+                minute=minute,
+                timezone=self.timezone
+            ),
+            id=job_id,
+            replace_existing=True
+        )
+        
+        logger.info(f"Added market close job at {config.MARKET_CLOSE_TIME} {config.TIMEZONE}")
+        
+        return job_id
+        
     def run_once_now(self, job_func):
         """
         Run a job once immediately.

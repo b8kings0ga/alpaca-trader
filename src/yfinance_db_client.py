@@ -105,8 +105,8 @@ class YFinanceDBClient:
             logger.error(f"Error connecting to YFinance Data Service: {e}")
             return {}
             
-    def fetch_data(self, symbols: Optional[List[str]] = None, 
-                  period: str = "1d", interval: str = "1m") -> Dict[str, Any]:
+    def fetch_data(self, symbols: Optional[List[str]] = None,
+                   period: str = "1d", interval: str = "1m") -> Dict[str, Any]:
         """
         Trigger data fetching on the YFinance Data Service.
         
@@ -119,6 +119,7 @@ class YFinanceDBClient:
             Dict: Dictionary with fetch results
         """
         try:
+            logger.info(f"YFinanceDBClient.fetch_data() called with symbols: {symbols}")
             url = f"{self.base_url}/fetch"
             data = {
                 "symbols": symbols,
@@ -126,6 +127,7 @@ class YFinanceDBClient:
                 "interval": interval
             }
             
+            logger.info(f"Sending request to {url} with data: {data}")
             response = requests.post(url, json=data)
             
             if response.status_code == 200:
@@ -138,6 +140,8 @@ class YFinanceDBClient:
                 
         except Exception as e:
             logger.error(f"Error connecting to YFinance Data Service: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return {}
             
     def is_service_available(self) -> bool:
@@ -377,6 +381,7 @@ class YFinanceDBClient:
         """
         logger.info(f"YFinanceDBClient.get_bars() was called for {symbols}")
         data = {}
+        missing_symbols = []
         
         for symbol in symbols:
             try:
@@ -386,6 +391,7 @@ class YFinanceDBClient:
                     "limit": limit
                 }
                 
+                logger.info(f"Requesting data for {symbol} from {url} with params {params}")
                 response = requests.get(url, params=params)
                 
                 if response.status_code == 200:
@@ -397,11 +403,22 @@ class YFinanceDBClient:
                         logger.info(f"Retrieved {len(df)} rows of data for {symbol} from YFinance DB Service")
                         data[symbol] = df
                     else:
-                        logger.warning(f"No data found for {symbol} in YFinance DB Service")
+                        logger.warning(f"No data found for {symbol} in YFinance DB Service (empty result)")
+                        missing_symbols.append(symbol)
                 else:
                     logger.error(f"Error retrieving data for {symbol} from YFinance DB Service: {response.status_code} - {response.text}")
+                    missing_symbols.append(symbol)
             except Exception as e:
                 logger.error(f"Error getting bars for {symbol}: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                missing_symbols.append(symbol)
+        
+        if missing_symbols:
+            logger.warning(f"Failed to retrieve data for the following symbols: {missing_symbols}")
+        
+        logger.info(f"Successfully retrieved data for {len(data)} out of {len(symbols)} symbols")
+        logger.info(f"Symbols with data: {list(data.keys())}")
                 
         return data
     
@@ -455,6 +472,9 @@ class YFinanceDBClient:
         positions = []
         logger.info(f"Using symbols from config: {config.SYMBOLS}")
         
+        # Log which symbols we're going to attempt to create positions for
+        logger.info(f"Attempting to create positions for symbols: {config.SYMBOLS}")
+        
         # Get current prices for symbols
         for symbol in config.SYMBOLS:
             try:
@@ -462,14 +482,15 @@ class YFinanceDBClient:
                 url = f"{self.base_url}/data/{symbol}"
                 params = {"limit": 1}
                 
-                logger.info(f"Fetching data for simulated position: {url} with params {params}")
+                logger.info(f"Fetching data for simulated position for {symbol}: {url} with params {params}")
                 response = requests.get(url, params=params)
                 
-                logger.info(f"Response status code: {response.status_code}")
+                logger.info(f"Response status code for {symbol}: {response.status_code}")
                 if response.status_code == 200:
                     data = response.json()
                     logger.info(f"Data received for {symbol}: {len(data)} records")
                     if data and len(data) > 0:
+                        logger.info(f"Valid data found for {symbol}, creating position")
                         # Create a simulated position
                         current_price = data[0]['close']
                         logger.info(f"Current price for {symbol}: ${current_price:.2f}")
@@ -496,16 +517,61 @@ class YFinanceDBClient:
                             current_price=current_price,
                             unrealized_pl=unrealized_pl
                         )
-                        
                         positions.append(position)
                         logger.info(f"Created simulated position for {symbol}: {qty} shares at ${current_price:.2f}")
                     else:
-                        logger.warning(f"No data available for {symbol} to create simulated position")
+                        logger.warning(f"No valid data found for {symbol}, creating default position")
+                        self._create_default_position(symbol, positions, Position)
+                else:
+                    logger.warning(f"Failed to fetch data for {symbol} (status code: {response.status_code}), creating default position")
+                    self._create_default_position(symbol, positions, Position)
             except Exception as e:
                 logger.error(f"Error creating simulated position for {symbol}: {e}")
+                logger.info(f"Creating default position for {symbol} due to error")
+                self._create_default_position(symbol, positions, Position)
         
         logger.info(f"Returning {len(positions)} simulated positions")
         return positions
+    
+    def _create_default_position(self, symbol, positions, Position):
+        """
+        Create a default position for a symbol when no data is available.
+        
+        Args:
+            symbol: Stock symbol
+            positions: List to append the position to
+            Position: Position namedtuple class
+        """
+        try:
+            # Use a default price
+            default_price = 100.0
+            logger.info(f"Using default price for {symbol}: ${default_price:.2f}")
+            
+            # Create deterministic but varied quantities
+            symbol_hash = sum(ord(c) for c in symbol)
+            qty = 10 + (symbol_hash % 90)  # Between 10 and 100 shares
+            
+            # Vary entry prices
+            entry_factor = 0.90 + ((symbol_hash % 15) / 100)  # Between 0.90 and 1.05
+            avg_entry_price = default_price * entry_factor
+            
+            market_value = qty * default_price
+            unrealized_pl = qty * (default_price - avg_entry_price)
+            
+            logger.info(f"Creating default position with qty={qty}, avg_entry_price=${avg_entry_price:.2f}, market_value=${market_value:.2f}")
+            
+            position = Position(
+                symbol=symbol,
+                qty=qty,
+                market_value=market_value,
+                avg_entry_price=avg_entry_price,
+                current_price=default_price,
+                unrealized_pl=unrealized_pl
+            )
+            positions.append(position)
+            logger.info(f"Created default position for {symbol}: {qty} shares at ${default_price:.2f}")
+        except Exception as e:
+            logger.error(f"Error creating default position for {symbol}: {e}")
         
     def get_market_hours(self):
         """

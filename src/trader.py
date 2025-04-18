@@ -2,6 +2,7 @@
 Order execution for the Alpaca Trading Bot.
 """
 import os
+import time
 import alpaca_trade_api as tradeapi
 import requests
 from config import config
@@ -74,17 +75,17 @@ class Trader:
     
     # Set the YFinance DB URL as a class variable
     YFINANCE_DB_URL = None  # Will be set properly when class is loaded
+    
+    """
+    Class for executing trades with Alpaca.
+    """
+    
     # Initialize the URL using the classmethod
     @classmethod
     def _initialize_class(cls):
         cls.YFINANCE_DB_URL = cls._get_yfinance_db_url()
         logger.info(f"Using YFinance DB URL: {cls.YFINANCE_DB_URL}")
-        
-    # Call the initialization method when the class is loaded
-    _initialize_class = classmethod(_initialize_class)
-    """
-    Class for executing trades with Alpaca.
-    """
+
     def __init__(self):
         """
         Initialize the Trader class with Alpaca API.
@@ -110,6 +111,16 @@ class Trader:
             base_url,
             api_version='v2'
         )
+        
+        # Verify Alpaca API connection
+        try:
+            account = self.api.get_account()
+            logger.info(f"Successfully connected to Alpaca API. Account status: {account.status}")
+            logger.info(f"Account details: ID={account.id}, Cash=${float(account.cash):.2f}, Equity=${float(account.equity):.2f}")
+        except Exception as e:
+            logger.error(f"Error connecting to Alpaca API: {e}")
+            logger.error("This may cause trades to be recorded in the database but not executed in Alpaca")
+            
         logger.info("Trader initialized")
         
     def execute_signals(self, signals, account_info, force_initial_positions=False):
@@ -273,10 +284,19 @@ class Trader:
                             time_in_force='day'
                         )
                         
-                        # Store the executed trade in the database
-                        self.store_trade(self._format_order(order))
+                        formatted_order = self._format_order(order)
+                        
+                        # Check if the order was actually accepted by Alpaca
+                        if order.status == 'accepted' or order.status == 'filled':
+                            logger.info(f"[Run ID: {self.run_id or 'unknown'}] Initial position order was accepted by Alpaca, storing in database")
+                            # Store the executed trade in the database
+                            trade_id = self.store_trade(formatted_order)
+                            logger.info(f"[Run ID: {self.run_id or 'unknown'}] Trade stored in database with ID: {trade_id}")
+                        else:
+                            logger.warning(f"[Run ID: {self.run_id or 'unknown'}] Initial position order was not accepted by Alpaca (status: {order.status}), not storing in database")
+                        
                         logger.info(f"Initial position: Buy order placed for {qty} shares of {symbol} at ~${price:.2f}")
-                        executed_orders.append(self._format_order(order))
+                        executed_orders.append(formatted_order)
                     except Exception as e:
                         logger.error(f"Error creating initial position for {symbol}: {e}")
         
@@ -361,8 +381,20 @@ class Trader:
                                         type='market',
                                         time_in_force='day'
                                     )
+                                    
+                                    formatted_order = self._format_order(order)
+                                    
+                                    # Check if the order was actually accepted by Alpaca
+                                    if order.status == 'accepted' or order.status == 'filled':
+                                        logger.info(f"[Run ID: {self.run_id or 'unknown'}] Additional buy order was accepted by Alpaca, storing in database")
+                                        # Store the executed trade in the database
+                                        trade_id = self.store_trade(formatted_order)
+                                        logger.info(f"[Run ID: {self.run_id or 'unknown'}] Trade stored in database with ID: {trade_id}")
+                                    else:
+                                        logger.warning(f"[Run ID: {self.run_id or 'unknown'}] Additional buy order was not accepted by Alpaca (status: {order.status}), not storing in database")
+                                    
                                     logger.info(f"Additional buy order placed for {additional_qty} shares of {symbol} at ~${price:.2f}")
-                                    executed_orders.append(self._format_order(order))
+                                    executed_orders.append(formatted_order)
                                 except Exception as e:
                                     logger.error(f"Error placing additional buy order for {symbol}: {e}")
                         else:
@@ -392,7 +424,6 @@ class Trader:
                     
                     # Update the last order time for this symbol
                     self.last_order_times[symbol] = current_time
-                    
                     order = self.api.submit_order(
                         symbol=symbol,
                         qty=qty,
@@ -404,6 +435,46 @@ class Trader:
                     formatted_order = self._format_order(order)
                     logger.info(f"[Run ID: {self.run_id or 'unknown'}] Buy order placed for {qty} shares of {symbol} at ~${price:.2f}")
                     logger.info(f"[Run ID: {self.run_id or 'unknown'}] Order details: ID={order.id}, Status={order.status}")
+                    
+                    # Verify order status by fetching it again from Alpaca
+                    try:
+                        # Wait a moment for the order to be processed
+                        time.sleep(1)
+                        fetched_order = self.api.get_order(order.id)
+                        logger.info(f"[Run ID: {self.run_id or 'unknown'}] Verified order status from Alpaca: ID={fetched_order.id}, Status={fetched_order.status}")
+                        
+                        # Update the order status in our formatted order
+                        formatted_order['status'] = fetched_order.status
+                        
+                        # Only store the trade if the order is executable
+                        if self._is_order_executable(fetched_order):
+                            logger.info(f"[Run ID: {self.run_id or 'unknown'}] Order is executable (status: {fetched_order.status}), storing in database")
+                            trade_id = self.store_trade(formatted_order)
+                            logger.info(f"[Run ID: {self.run_id or 'unknown'}] Trade stored in database with ID: {trade_id}")
+                        else:
+                            logger.warning(f"[Run ID: {self.run_id or 'unknown'}] Order is not executable (status: {fetched_order.status}), not storing in database")
+                    except Exception as e:
+                        logger.error(f"[Run ID: {self.run_id or 'unknown'}] Error verifying order status from Alpaca: {e}")
+                    # Verify order status by fetching it again from Alpaca
+                    try:
+                        fetched_order = self.api.get_order(order.id)
+                        logger.info(f"[Run ID: {self.run_id or 'unknown'}] Verified order status from Alpaca: ID={fetched_order.id}, Status={fetched_order.status}")
+                        
+                        # Update the order status in our formatted order
+                        formatted_order['status'] = fetched_order.status
+                    except Exception as e:
+                        logger.error(f"[Run ID: {self.run_id or 'unknown'}] Error verifying order status from Alpaca: {e}")
+                    
+                    
+                    # Check if the order was actually accepted by Alpaca
+                    if order.status == 'accepted' or order.status == 'filled':
+                        logger.info(f"[Run ID: {self.run_id or 'unknown'}] Order was accepted by Alpaca, storing in database")
+                        # Store the executed trade in the database
+                        trade_id = self.store_trade(formatted_order)
+                        logger.info(f"[Run ID: {self.run_id or 'unknown'}] Trade stored in database with ID: {trade_id}")
+                    else:
+                        logger.warning(f"[Run ID: {self.run_id or 'unknown'}] Order was not accepted by Alpaca (status: {order.status}), not storing in database")
+                    
                     executed_orders.append(formatted_order)
                     
                 elif action == 'sell':
@@ -438,11 +509,29 @@ class Trader:
                         # Format the order for storage and logging
                         formatted_order = self._format_order(order)
                         
-                        # Store the executed trade in the database
-                        self.store_trade(formatted_order)
-                        
                         logger.info(f"[Run ID: {self.run_id or 'unknown'}] Sell order successfully placed for {qty} shares of {symbol} at ~${price:.2f}")
                         logger.info(f"[Run ID: {self.run_id or 'unknown'}] Order details: ID={order.id}, Status={order.status}")
+                        
+                        # Verify order status by fetching it again from Alpaca
+                        try:
+                            # Wait a moment for the order to be processed
+                            time.sleep(1)
+                            fetched_order = self.api.get_order(order.id)
+                            logger.info(f"[Run ID: {self.run_id or 'unknown'}] Verified sell order status from Alpaca: ID={fetched_order.id}, Status={fetched_order.status}")
+                            
+                            # Update the order status in our formatted order
+                            formatted_order['status'] = fetched_order.status
+                            
+                            # Only store the trade if the order is executable
+                            if self._is_order_executable(fetched_order):
+                                logger.info(f"[Run ID: {self.run_id or 'unknown'}] Sell order is executable (status: {fetched_order.status}), storing in database")
+                                trade_id = self.store_trade(formatted_order)
+                                logger.info(f"[Run ID: {self.run_id or 'unknown'}] Trade stored in database with ID: {trade_id}")
+                            else:
+                                logger.warning(f"[Run ID: {self.run_id or 'unknown'}] Sell order is not executable (status: {fetched_order.status}), not storing in database")
+                        except Exception as e:
+                            logger.error(f"[Run ID: {self.run_id or 'unknown'}] Error verifying sell order status from Alpaca: {e}")
+                        
                         executed_orders.append(formatted_order)
                     except Exception as e:
                         logger.error(f"Error placing sell order for {symbol}: {e}")
@@ -470,7 +559,7 @@ class Trader:
         """
         try:
             # Prepare data for API request
-            url = f"{self.YFINANCE_DB_URL}/signals"
+            url = f"{Trader.YFINANCE_DB_URL}/signals"
             
             # Extract signal data
             action = signal_data.get('action', 'hold')
@@ -514,7 +603,28 @@ class Trader:
         except Exception as e:
             logger.error(f"Error storing trading signal for {symbol}: {e}")
             return None
+    def _is_order_executable(self, order):
+        """
+        Check if an order is in a state where it can be considered executable.
+        
+        Args:
+            order: Order object from Alpaca API
             
+        Returns:
+            bool: True if the order is filled or in a state that will lead to execution
+        """
+        # Consider these statuses as executable
+        executable_statuses = ['filled', 'accepted', 'partially_filled']
+        
+        # Get the status from either an object or dictionary
+        if hasattr(order, 'status'):
+            status = order.status
+        else:
+            status = order.get('status', '')
+            
+        logger.info(f"Checking if order is executable. Status: {status}")
+        return status.lower() in executable_statuses
+                
     def store_trade(self, order):
         """
         Store an executed trade in the database.
@@ -525,12 +635,20 @@ class Trader:
         Returns:
             int: ID of the inserted trade or None if failed
         """
+        # Check if the order is executable
+        if not self._is_order_executable(order):
+            logger.warning(f"Order {order.get('id')} is not executable, skipping storage")
+            return None
+            
+        # Log the order status to help diagnose issues
+        logger.info(f"Storing trade with order status: {order.get('status', 'unknown')}")
         try:
             # Prepare data for API request
             # Ensure we're using the class-level YFINANCE_DB_URL
-            url = f"{self.YFINANCE_DB_URL}/trades"
-            logger.info(f"Using YFinance DB URL: {self.YFINANCE_DB_URL}")
+            url = f"{Trader.YFINANCE_DB_URL}/trades"
+            logger.info(f"Using YFinance DB URL: {Trader.YFINANCE_DB_URL}")
             logger.info(f"Attempting to store trade at URL: {url}")
+            logger.info(f"Order details for storage: ID={order.get('id')}, Symbol={order.get('symbol')}, Side={order.get('side')}, Status={order.get('status')}")
             
             # Extract order data
             order_id = order.get('id')
@@ -555,14 +673,16 @@ class Trader:
             # Add more detailed logging
             logger.info(f"YFINANCE_DB_HOST: {os.getenv('YFINANCE_DB_HOST', 'not set')}")
             logger.info(f"YFINANCE_DB_PORT: {os.getenv('YFINANCE_DB_PORT', 'not set')}")
-            logger.info(f"Class YFINANCE_DB_URL: {self.YFINANCE_DB_URL}")
+            logger.info(f"Class YFINANCE_DB_URL: {Trader.YFINANCE_DB_URL}")
             logger.info(f"Running in Docker: {os.path.exists('/.dockerenv')}")
             
             # Send request
             logger.info(f"Sending POST request to {url} with params: {params}")
             
             try:
+                logger.info(f"Attempting to connect to YFinance DB at {url}")
                 response = requests.post(url, params=params, timeout=10)
+                logger.info(f"Response from YFinance DB: Status={response.status_code}, Content={response.text[:100]}")
             except requests.exceptions.ConnectionError as e:
                 logger.error(f"Connection error when storing trade: {e}")
                 # Try with an alternative URL if the main one fails
@@ -571,12 +691,19 @@ class Trader:
                 logger.info(f"Trying alternative URL: {alt_url}")
                 try:
                     response = requests.post(alt_url, params=params, timeout=10)
+                    logger.info(f"Response from alternative URL: Status={response.status_code}, Content={response.text[:100]}")
                 except requests.exceptions.ConnectionError as e:
                     logger.error(f"Connection error with alternative URL: {e}")
                     # Try with localhost as a last resort
                     last_resort_url = f"http://localhost:8001/trades"
                     logger.info(f"Trying last resort URL: {last_resort_url}")
-                    response = requests.post(last_resort_url, params=params, timeout=10)
+                    try:
+                        response = requests.post(last_resort_url, params=params, timeout=10)
+                        logger.info(f"Response from last resort URL: Status={response.status_code}, Content={response.text[:100]}")
+                    except requests.exceptions.ConnectionError as e:
+                        logger.error(f"Connection error with last resort URL: {e}")
+                        logger.error(f"All connection attempts to YFinance DB failed. Trade will not be stored.")
+                        return None
             
             if response.status_code == 200:
                 result = response.json()
@@ -590,7 +717,7 @@ class Trader:
         except Exception as e:
             logger.error(f"Error storing executed trade: {e}")
             logger.error(f"Exception type: {type(e).__name__}")
-            logger.error(f"YFINANCE_DB_URL: {self.YFINANCE_DB_URL}")
+            logger.error(f"YFINANCE_DB_URL: {Trader.YFINANCE_DB_URL}")
             logger.error(f"YFINANCE_DB_HOST: {self.YFINANCE_DB_HOST}")
             logger.error(f"YFINANCE_DB_PORT: {self.YFINANCE_DB_PORT}")
             logger.error(f"Environment variables:")
@@ -659,3 +786,26 @@ class Trader:
         except Exception as e:
             logger.error(f"Error liquidating positions: {e}")
             return 0
+            
+    def get_account_info(self):
+        """
+        Get account information from Alpaca.
+        
+        Returns:
+            dict: Account information
+        """
+        try:
+            account = self.api.get_account()
+            return {
+                'id': account.id,
+                'equity': float(account.equity),
+                'cash': float(account.cash),
+                'buying_power': float(account.buying_power),
+                'status': account.status
+            }
+        except Exception as e:
+            logger.error(f"Error getting account information: {e}")
+            return None
+
+# Call the initialization method when the class is loaded
+Trader._initialize_class()

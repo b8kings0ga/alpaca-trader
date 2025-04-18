@@ -78,7 +78,13 @@ class AlpacaBot:
         
         if self.is_running:
             logger.warning(f"[Run ID: {run_id}] Bot is already running - skipping this run")
-            return
+            # Add force-kill logic for running instances that have been running for too long
+            if self.last_run_time and (datetime.now() - self.last_run_time).total_seconds() > 300:  # 5 minute timeout
+                logger.warning(f"[Run ID: {run_id}] Previous job has been running for too long (>5 minutes), force-killing it")
+                self.is_running = False
+                logger.info(f"[Run ID: {run_id}] Reset is_running flag to False due to timeout")
+            else:
+                return
         
         self.is_running = True
         start_time = time.time()
@@ -296,6 +302,7 @@ class AlpacaBot:
             self.notification.notify_error(str(e))
         finally:
             self.is_running = False
+            logger.info(f"[Run ID: {run_id}] Reset is_running flag to False at end of run")
             
     def wait_for_market_open(self):
         """

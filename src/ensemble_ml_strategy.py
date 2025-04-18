@@ -235,3 +235,141 @@ def train_ensemble_model(model_types=None, symbols=None, period='1y'):
             logger.error(f"Error training {model_type} model: {e}")
     
     return trained_models
+
+
+# Add the optimize method to the existing EnsembleMLStrategy class
+EnsembleMLStrategy.optimize = lambda self, historical_data, target_metric='profit', test_period='1mo': _optimize(self, historical_data, target_metric, test_period)
+
+def _optimize(self, historical_data, target_metric='profit', test_period='1mo'):
+        """
+        Optimize ensemble strategy by fine-tuning model weights and/or retraining models.
+        
+        This method tests different weight combinations for the ensemble models
+        to find the optimal settings that maximize the target metric.
+        
+        Args:
+            historical_data (dict): Dictionary of DataFrames with historical market data
+            target_metric (str): Metric to optimize for ('profit', 'sharpe', 'win_rate', etc.)
+            test_period (str): Period to use for testing optimization results
+            
+        Returns:
+            dict: Dictionary containing optimization results and new weights
+        """
+        logger.info(f"Optimizing EnsembleMLStrategy for {target_metric}...")
+        
+        # Check if models are available
+        if not self.models:
+            logger.warning("No ML models available for optimization")
+            return {
+                'success': False,
+                'message': 'No ML models available for optimization',
+                'original_params': {}
+            }
+        
+        # Store original weights
+        original_weights = self.weights.copy()
+        
+        # Generate weight combinations to test
+        weight_combinations = []
+        
+        # Start with the current weights
+        weight_combinations.append(self.weights.copy())
+        
+        # Generate some variations of the weights
+        for model_type in self.model_types:
+            # Increase weight for this model
+            weights = self.weights.copy()
+            weights[model_type] = min(weights[model_type] * 1.5, 1.0)
+            
+            # Normalize weights
+            total = sum(weights.values())
+            weights = {k: v / total for k, v in weights.items()}
+            
+            weight_combinations.append(weights)
+            
+            # Decrease weight for this model
+            weights = self.weights.copy()
+            weights[model_type] = max(weights[model_type] * 0.5, 0.1)
+            
+            # Normalize weights
+            total = sum(weights.values())
+            weights = {k: v / total for k, v in weights.items()}
+            
+            weight_combinations.append(weights)
+        
+        # Add equal weights
+        equal_weight = 1.0 / len(self.model_types)
+        equal_weights = {model_type: equal_weight for model_type in self.model_types}
+        weight_combinations.append(equal_weights)
+        
+        logger.info(f"Testing {len(weight_combinations)} weight combinations")
+        
+        # Store results for each weight combination
+        results = []
+        
+        # Test each weight combination
+        for weights in weight_combinations:
+            logger.info(f"Testing weights: {weights}")
+            
+            # Create a copy of the strategy with these weights
+            strategy_copy = EnsembleMLStrategy(model_types=self.model_types, weights=weights)
+            
+            # Load the same models
+            strategy_copy.models = self.models
+            
+            # Run backtest with these weights
+            try:
+                backtest_results = strategy_copy.backtest(historical_data)
+                
+                # Calculate average performance across all symbols
+                avg_performance = {}
+                for metric in ['returns', 'strategy_returns', 'cumulative_returns',
+                              'strategy_cumulative_returns', 'sharpe_ratio',
+                              'max_drawdown', 'win_rate', 'profit']:
+                    values = [result[metric] for symbol, result in backtest_results.items() if metric in result]
+                    avg_performance[metric] = sum(values) / len(values) if values else 0
+                
+                # Store results
+                results.append({
+                    'weights': weights,
+                    'performance': avg_performance
+                })
+                
+            except Exception as e:
+                logger.error(f"Error testing weights {weights}: {e}")
+        
+        # Find the best weight combination based on the target metric
+        if not results:
+            logger.warning("No valid weight combinations found during optimization")
+            return {
+                'success': False,
+                'message': 'No valid weight combinations found',
+                'original_params': original_weights
+            }
+        
+        # Sort results by the target metric
+        sorted_results = sorted(results,
+                               key=lambda x: x['performance'][target_metric],
+                               reverse=True)
+        
+        best_weights = sorted_results[0]['weights']
+        
+        logger.info(f"Optimization complete. Best weights: {best_weights}")
+        logger.info(f"Performance improvement: "
+                   f"{target_metric} increased from "
+                   f"{results[0]['performance'][target_metric]:.4f} to "
+                   f"{sorted_results[0]['performance'][target_metric]:.4f}")
+        
+        # Update weights
+        self.weights = best_weights
+        
+        # Return optimization results
+        return {
+            'success': True,
+            'original_params': original_weights,
+            'new_params': best_weights,
+            'performance_improvement': {
+                target_metric: sorted_results[0]['performance'][target_metric] - results[0]['performance'][target_metric]
+            },
+            'all_results': sorted_results[:5]  # Return top 5 weight combinations
+        }

@@ -41,6 +41,10 @@ SYMBOLS = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOGL,META,TSLA,NVDA").split(",")
 DB_PATH = os.getenv("DB_PATH", "data/market_data.db")  # Database path
 DEFAULT_INTERVAL = os.getenv("DEFAULT_INTERVAL", "1m")  # Default interval for data (set to 1m for minute-level data)
 
+# Log the actual symbols being used
+logger.info(f"YFinance DB Service configured with symbols: {SYMBOLS}")
+logger.info(f"SYMBOLS environment variable: {os.getenv('SYMBOLS', 'Not set')}")
+
 # Create necessary directories
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 os.makedirs("logs", exist_ok=True)
@@ -209,7 +213,8 @@ class YFinanceDataService:
             logger.info("Adding sample trading signals for common symbols")
             # Sample trading signals for common symbols
             signals_added = 0
-            for symbol in ["AAPL", "MSFT", "AMZN", "GOOGL", "META"]:
+            # Include TSLA and NVDA in the sample data
+            for symbol in ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "NVDA"]:
                 # Create a few sample signals with different timestamps
                 for i in range(5):
                     timestamp = (datetime.now() - timedelta(days=i)).isoformat()
@@ -235,7 +240,8 @@ class YFinanceDataService:
             logger.info("Adding sample executed trades for common symbols")
             # Sample executed trades for common symbols
             trades_added = 0
-            for symbol in ["AAPL", "MSFT", "AMZN"]:
+            # Include TSLA and NVDA in the sample trades
+            for symbol in ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "NVDA"]:
                 # Create a few sample trades with different timestamps
                 for i in range(3):
                     timestamp = (datetime.now() - timedelta(days=i)).isoformat()

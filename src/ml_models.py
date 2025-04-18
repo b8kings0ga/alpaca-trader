@@ -272,6 +272,14 @@ def get_ml_model(model_type='random_forest'):
         'random_forest': RandomForestModel
     }
     
+    logger.info(f"Requested ML model type: '{model_type}'")
+    logger.info(f"Available model types: {list(models.keys())}")
+    
+    # Check if the model type is 'gradient_boosting_ensemble' and provide a helpful message
+    if model_type.lower() == 'gradient_boosting_ensemble':
+        logger.warning("'gradient_boosting_ensemble' is not a valid model type. Did you mean to use the EnsembleMLStrategy instead?")
+        logger.warning("For ML models, use 'gradient_boosting' or 'random_forest'. For ensemble strategy, use 'ensemble_ml' as the strategy name.")
+    
     model_class = models.get(model_type.lower())
     if not model_class:
         logger.error(f"ML model type '{model_type}' not found")

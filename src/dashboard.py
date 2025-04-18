@@ -562,11 +562,19 @@ class Dashboard:
         if st.sidebar.button("Fetch Data"):
             with st.sidebar:
                 with st.spinner("Fetching data..."):
+                    logger.info(f"Attempting to fetch data for symbols: {selected_symbols}")
                     if hasattr(self.strategy, 'fetch_data') and callable(getattr(self.strategy, 'fetch_data')):
                         self.data = self.strategy.fetch_data(selected_symbols)
+                        logger.info(f"Data fetched for symbols: {list(self.data.keys())}")
                         st.success(f"Data fetched for {len(self.data)} symbols using YFinance")
+                        # Log any missing symbols
+                        missing_symbols = [s for s in selected_symbols if s not in self.data]
+                        if missing_symbols:
+                            logger.warning(f"Failed to fetch data for symbols: {missing_symbols}")
+                            st.warning(f"Could not fetch data for: {', '.join(missing_symbols)}")
                     else:
                         self.data = self.market_data.get_bars(selected_symbols, timeframe, data_period)
+                        logger.info(f"Data fetched for symbols: {list(self.data.keys())}")
                         st.success(f"Data fetched for {len(self.data)} symbols using Alpaca API")
         
         # Account refresh button
