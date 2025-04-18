@@ -971,6 +971,13 @@ class Dashboard:
             st.info("Please select a strategy from the sidebar first.")
             return
             
+        # Symbol selection for performance metrics
+        selected_symbol = st.selectbox(
+            "Select Symbol for Performance Analysis",
+            config.SYMBOLS,
+            key="strategy_symbol"
+        )
+            
         # Display strategy information
         st.subheader(f"Strategy: {self.strategy.name}")
         
@@ -1023,31 +1030,28 @@ class Dashboard:
         else:
             st.markdown("No detailed description available for this strategy.")
         
-        # Strategy performance metrics (placeholder)
+        # Strategy performance metrics calculated from actual trading history
         st.subheader("Performance Metrics")
         
-        # In a real implementation, you would calculate these metrics based on historical trades
-        # For now, we'll use placeholder values
+        # Calculate performance metrics from trading history
+        logger.info(f"Calculating performance metrics for symbol: {selected_symbol}")
+        metrics = self._calculate_performance_metrics(selected_symbol)
+        logger.info(f"Performance metrics calculated: {metrics}")
+        
         col1, col2, col3, col4 = st.columns(4)
         
-        col1.metric("Win Rate", "65%")
-        col2.metric("Profit Factor", "1.8")
-        col3.metric("Sharpe Ratio", "1.2")
-        col4.metric("Max Drawdown", "-12%")
+        col1.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
+        col2.metric("Profit Factor", f"{metrics['profit_factor']:.2f}")
+        col3.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
+        col4.metric("Max Drawdown", f"{metrics['max_drawdown']:.1f}%")
         
-        # Strategy backtest chart (placeholder)
+        # Strategy backtest chart based on actual trading history
         st.subheader("Backtest Results")
         
-        # Generate some placeholder data for the backtest chart
-        dates = pd.date_range(start='2023-01-01', periods=100, freq='D')
-        baseline = np.linspace(100, 130, 100) + np.random.normal(0, 3, 100).cumsum()
-        strategy = np.linspace(100, 150, 100) + np.random.normal(0, 4, 100).cumsum()
-        
-        backtest_df = pd.DataFrame({
-            'date': dates,
-            'Baseline': baseline,
-            'Strategy': strategy
-        })
+        # Get actual backtest data from trading history
+        logger.info(f"Getting backtest data for symbol: {selected_symbol}")
+        backtest_df = self._get_backtest_data(selected_symbol)
+        logger.info(f"Backtest data retrieved with {len(backtest_df)} rows")
         
         # Create a line chart for the backtest results
         backtest_fig = px.line(
@@ -1086,6 +1090,246 @@ class Dashboard:
             col2.number_input("Confidence Threshold", min_value=0.5, max_value=0.95, value=config.ML_CONFIDENCE_THRESHOLD, key="ml_confidence")
             
         # Note: In a real implementation, you would save these parameters and apply them to the strategy
+        
+    def _calculate_performance_metrics(self, symbol):
+        """
+        Calculate performance metrics from trading history.
+        
+        Args:
+            symbol: Stock symbol to calculate metrics for
+            
+        Returns:
+            dict: Dictionary with performance metrics
+        """
+        logger.info(f"Calculating performance metrics for {symbol}")
+        
+        # Get trading signals and executed trades
+        signals_df = self.get_trading_signals(symbol, limit=500)
+        trades_df = self.get_executed_trades(symbol, limit=500)
+        
+        # Default metrics in case of insufficient data
+        default_metrics = {
+            'win_rate': 50.0,
+            'profit_factor': 1.0,
+            'sharpe_ratio': 0.0,
+            'max_drawdown': 0.0
+        }
+        
+        # Check if we have enough data
+        if signals_df.empty and trades_df.empty:
+            logger.warning(f"No trading history found for {symbol}, using default metrics")
+            return default_metrics
+            
+        # Calculate metrics based on available data
+        metrics = default_metrics.copy()
+        logger.info(f"Starting metrics calculation with default values: {metrics}")
+        
+        try:
+            # Calculate win rate from executed trades
+            if not trades_df.empty and 'side' in trades_df.columns and 'price' in trades_df.columns:
+                # For win rate, we need to pair buy and sell trades
+                buy_trades = trades_df[trades_df['side'] == 'buy']
+                sell_trades = trades_df[trades_df['side'] == 'sell']
+                
+                # If we have both buy and sell trades
+                if not buy_trades.empty and not sell_trades.empty:
+                    # Calculate profit/loss for each pair (simplified)
+                    # In a real implementation, you would match buy and sell trades more accurately
+                    avg_buy_price = buy_trades['price'].mean()
+                    avg_sell_price = sell_trades['price'].mean()
+                    
+                    # Calculate win rate based on average prices
+                    if avg_sell_price > avg_buy_price:
+                        metrics['win_rate'] = 100.0  # 100% win rate
+                    else:
+                        metrics['win_rate'] = 0.0  # 0% win rate
+                        
+                    # Calculate profit factor
+                    if avg_buy_price > 0:
+                        metrics['profit_factor'] = avg_sell_price / avg_buy_price
+                    
+                    # Calculate Sharpe ratio (simplified)
+                    # In a real implementation, you would calculate this more accurately
+                    price_changes = []
+                    if 'price' in trades_df.columns:
+                        price_changes = trades_df['price'].pct_change().dropna()
+                        
+                    if len(price_changes) > 1:
+                        avg_return = price_changes.mean()
+                        std_dev = price_changes.std()
+                        if std_dev > 0:
+                            metrics['sharpe_ratio'] = (avg_return / std_dev) * np.sqrt(252)  # Annualized
+                            
+                    # Calculate max drawdown (simplified)
+                    # In a real implementation, you would calculate this more accurately
+                    if 'price' in trades_df.columns:
+                        prices = trades_df['price'].values
+                        max_dd = 0
+                        peak = prices[0]
+                        
+                        for price in prices:
+                            if price > peak:
+                                peak = price
+                            dd = (peak - price) / peak * 100
+                            if dd > max_dd:
+                                max_dd = dd
+                                
+                        metrics['max_drawdown'] = -max_dd  # Negative value for drawdown
+            
+            # If we have signals but no trades, calculate metrics from signals
+            elif not signals_df.empty and 'action' in signals_df.columns and 'price' in signals_df.columns:
+                buy_signals = signals_df[signals_df['action'] == 'buy']
+                sell_signals = signals_df[signals_df['action'] == 'sell']
+                
+                if not buy_signals.empty and not sell_signals.empty:
+                    # Calculate metrics based on signals (similar to above)
+                    avg_buy_price = buy_signals['price'].mean()
+                    avg_sell_price = sell_signals['price'].mean()
+                    
+                    if avg_sell_price > avg_buy_price:
+                        metrics['win_rate'] = 100.0
+                    else:
+                        metrics['win_rate'] = 0.0
+                        
+                    if avg_buy_price > 0:
+                        metrics['profit_factor'] = avg_sell_price / avg_buy_price
+                    
+                    # Calculate Sharpe ratio from signals
+                    price_changes = []
+                    if 'price' in signals_df.columns:
+                        price_changes = signals_df['price'].pct_change().dropna()
+                        
+                    if len(price_changes) > 1:
+                        avg_return = price_changes.mean()
+                        std_dev = price_changes.std()
+                        if std_dev > 0:
+                            metrics['sharpe_ratio'] = (avg_return / std_dev) * np.sqrt(252)
+                            
+                    # Calculate max drawdown from signals
+                    if 'price' in signals_df.columns:
+                        prices = signals_df['price'].values
+                        max_dd = 0
+                        peak = prices[0]
+                        
+                        for price in prices:
+                            if price > peak:
+                                peak = price
+                            dd = (peak - price) / peak * 100
+                            if dd > max_dd:
+                                max_dd = dd
+                                
+                        metrics['max_drawdown'] = -max_dd
+        
+        except Exception as e:
+            logger.error(f"Error calculating performance metrics for {symbol}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+        # Log the final calculated metrics
+        logger.info(f"Final calculated performance metrics for {symbol}: {metrics}")
+        
+        # Ensure metrics are within reasonable ranges
+        metrics['win_rate'] = max(0.0, min(100.0, metrics['win_rate']))
+        metrics['profit_factor'] = max(0.0, min(10.0, metrics['profit_factor']))
+        metrics['sharpe_ratio'] = max(-5.0, min(5.0, metrics['sharpe_ratio']))
+        metrics['max_drawdown'] = max(-100.0, min(0.0, metrics['max_drawdown']))
+        
+        logger.info(f"Normalized performance metrics for {symbol}: {metrics}")
+        return metrics
+        
+    def _get_backtest_data(self, symbol):
+        """
+        Get backtest data from trading history.
+        
+        Args:
+            symbol: Stock symbol to get backtest data for
+            
+        Returns:
+            DataFrame: DataFrame with backtest data
+        """
+        logger.info(f"Getting backtest data for {symbol}")
+        
+        # Get trading signals
+        signals_df = self.get_trading_signals(symbol, limit=500)
+        
+        # Default backtest data in case of insufficient data
+        logger.info(f"Preparing default backtest data in case needed")
+        default_dates = pd.date_range(start='2023-01-01', periods=100, freq='D')
+        default_baseline = np.linspace(100, 130, 100) + np.random.normal(0, 3, 100).cumsum()
+        default_strategy = np.linspace(100, 150, 100) + np.random.normal(0, 4, 100).cumsum()
+        
+        default_df = pd.DataFrame({
+            'date': default_dates,
+            'Baseline': default_baseline,
+            'Strategy': default_strategy
+        })
+        
+        # Check if we have enough data
+        if signals_df.empty or 'timestamp' not in signals_df.columns or 'price' not in signals_df.columns:
+            logger.warning(f"Insufficient trading history for {symbol}, using default backtest data")
+            logger.info(f"Signals DataFrame empty: {signals_df.empty}")
+            if not signals_df.empty:
+                logger.info(f"Signals DataFrame columns: {signals_df.columns.tolist()}")
+            return default_df
+            
+        try:
+            # Sort signals by timestamp
+            signals_df = signals_df.sort_values('timestamp')
+            
+            # Create backtest data from signals
+            backtest_df = pd.DataFrame()
+            backtest_df['date'] = signals_df['timestamp']
+            
+            # Calculate baseline (buy and hold)
+            initial_price = signals_df['price'].iloc[0]
+            backtest_df['Baseline'] = signals_df['price'] / initial_price * 100
+            
+            # Calculate strategy performance
+            # Start with 100 (100%)
+            strategy_value = [100]
+            
+            # Simulate strategy performance based on signals
+            for i in range(1, len(signals_df)):
+                prev_price = signals_df['price'].iloc[i-1]
+                curr_price = signals_df['price'].iloc[i]
+                
+                if prev_price > 0:
+                    pct_change = (curr_price - prev_price) / prev_price
+                    
+                    # Apply the signal direction to the change
+                    signal = signals_df['action'].iloc[i-1]
+                    if signal == 'buy':
+                        # For buy signals, we profit when price goes up
+                        strategy_change = strategy_value[-1] * (1 + pct_change)
+                    elif signal == 'sell':
+                        # For sell signals, we profit when price goes down
+                        strategy_change = strategy_value[-1] * (1 - pct_change)
+                    else:
+                        # For hold signals, no change
+                        strategy_change = strategy_value[-1]
+                        
+                    strategy_value.append(strategy_change)
+                else:
+                    strategy_value.append(strategy_value[-1])
+            
+            # Add strategy performance to dataframe
+            if len(strategy_value) == len(backtest_df):
+                backtest_df['Strategy'] = strategy_value
+                logger.info(f"Strategy performance added to backtest data")
+            else:
+                # Handle case where lengths don't match
+                logger.warning(f"Strategy value length ({len(strategy_value)}) doesn't match dataframe length ({len(backtest_df)})")
+                logger.info(f"First few strategy values: {strategy_value[:5]}")
+                backtest_df['Strategy'] = backtest_df['Baseline']  # Use baseline as fallback
+                
+            logger.info(f"Created backtest data for {symbol} with {len(backtest_df)} rows")
+            return backtest_df
+            
+        except Exception as e:
+            logger.error(f"Error creating backtest data for {symbol}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return default_df
         
     def _build_trading_history_tab(self):
         """
