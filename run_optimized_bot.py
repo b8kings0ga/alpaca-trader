@@ -32,7 +32,7 @@ class OptimizedEnsembleBot:
     Trading bot that uses an optimized ensemble of ML models to make trading decisions.
     """
     
-    def __init__(self, symbols, cash_allocation=0.9, max_positions=5, paper=True):
+    def __init__(self, symbols, cash_allocation=0.9, max_positions=5, paper=True, ignore_market_hours=False):
         """
         Initialize the bot.
         
@@ -46,6 +46,7 @@ class OptimizedEnsembleBot:
         self.cash_allocation = cash_allocation
         self.max_positions = max_positions
         self.paper = paper
+        self.ignore_market_hours = ignore_market_hours
         # Initialize trader
         self.trader = Trader()
         
@@ -62,6 +63,7 @@ class OptimizedEnsembleBot:
         logger.info(f"Cash allocation: {cash_allocation * 100}%")
         logger.info(f"Max positions: {max_positions}")
         logger.info(f"Paper trading: {paper}")
+        logger.info(f"Ignore market hours: {ignore_market_hours}")
     
     def load_models(self):
         """
@@ -347,8 +349,14 @@ class OptimizedEnsembleBot:
                 # Check if market is open
                 clock = self.trader.api.get_clock()
                 
-                if clock.is_open:
-                    logger.info("Market is open")
+                # Log market status for debugging
+                logger.info(f"Market status check: is_open={clock.is_open}, next_open={clock.next_open}, next_close={clock.next_close}")
+                
+                if clock.is_open or self.ignore_market_hours:
+                    if not clock.is_open:
+                        logger.info("Market is closed, but running anyway due to ignore_market_hours=True")
+                    else:
+                        logger.info("Market is open")
                     
                     # Run the bot
                     executed_trades = self.run_once()
@@ -357,7 +365,7 @@ class OptimizedEnsembleBot:
                     for trade in executed_trades:
                         logger.info(f"Executed trade: {trade}")
                 else:
-                    logger.info("Market is closed")
+                    logger.info("Market is closed, skipping bot run")
                 
                 # Sleep until next run
                 next_run = datetime.now() + timedelta(minutes=interval_minutes)
@@ -388,6 +396,8 @@ def main():
                         help='Interval between runs in minutes')
     parser.add_argument('--once', action='store_true',
                         help='Run the bot once and exit')
+    parser.add_argument('--ignore-market-hours', action='store_true',
+                        help='Run the bot even when the market is closed (for backtesting/optimization)')
     
     args = parser.parse_args()
     
@@ -399,7 +409,8 @@ def main():
         symbols=args.symbols,
         cash_allocation=args.cash_allocation,
         max_positions=args.max_positions,
-        paper=args.paper
+        paper=args.paper,
+        ignore_market_hours=args.ignore_market_hours
     )
     
     # Run the bot

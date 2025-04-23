@@ -1,0 +1,53 @@
+"""
+Configuration for the Alpaca Trading Bot Dashboard.
+"""
+import os
+from config import config
+
+# Default strategy to use when dashboard starts
+DEFAULT_STRATEGY = os.getenv("DASHBOARD_DEFAULT_STRATEGY", "moving_average_crossover")
+
+# Number of default symbols to display
+DEFAULT_SYMBOL_COUNT = int(os.getenv("DASHBOARD_DEFAULT_SYMBOL_COUNT", "3"))
+
+# Default timeframe index (0=1D, 1=1H, 2=15Min)
+DEFAULT_TIMEFRAME_INDEX = int(os.getenv("DASHBOARD_DEFAULT_TIMEFRAME_INDEX", "0"))
+
+# Available timeframes
+AVAILABLE_TIMEFRAMES = ["1D", "1H", "15Min"]
+
+# Data period slider settings
+DATA_PERIOD_MIN = int(os.getenv("DASHBOARD_DATA_PERIOD_MIN", "7"))
+DATA_PERIOD_MAX = int(os.getenv("DASHBOARD_DATA_PERIOD_MAX", "100"))
+DATA_PERIOD_DEFAULT = int(os.getenv("DASHBOARD_DATA_PERIOD_DEFAULT", "30"))
+DATA_PERIOD_STEP = int(os.getenv("DASHBOARD_DATA_PERIOD_STEP", "1"))
+
+# Strategy parameter settings
+MA_SHORT_WINDOW_MIN = int(os.getenv("DASHBOARD_MA_SHORT_WINDOW_MIN", "5"))
+MA_SHORT_WINDOW_MAX = int(os.getenv("DASHBOARD_MA_SHORT_WINDOW_MAX", "50"))
+MA_LONG_WINDOW_MIN = int(os.getenv("DASHBOARD_MA_LONG_WINDOW_MIN", "20"))
+MA_LONG_WINDOW_MAX = int(os.getenv("DASHBOARD_MA_LONG_WINDOW_MAX", "200"))
+
+RSI_PERIOD_MIN = int(os.getenv("DASHBOARD_RSI_PERIOD_MIN", "5"))
+RSI_PERIOD_MAX = int(os.getenv("DASHBOARD_RSI_PERIOD_MAX", "30"))
+RSI_OVERSOLD_MIN = int(os.getenv("DASHBOARD_RSI_OVERSOLD_MIN", "10"))
+RSI_OVERSOLD_MAX = int(os.getenv("DASHBOARD_RSI_OVERSOLD_MAX", "40"))
+RSI_OVERBOUGHT_MIN = int(os.getenv("DASHBOARD_RSI_OVERBOUGHT_MIN", "60"))
+RSI_OVERBOUGHT_MAX = int(os.getenv("DASHBOARD_RSI_OVERBOUGHT_MAX", "90"))
+
+ML_CONFIDENCE_MIN = float(os.getenv("DASHBOARD_ML_CONFIDENCE_MIN", "0.5"))
+ML_CONFIDENCE_MAX = float(os.getenv("DASHBOARD_ML_CONFIDENCE_MAX", "0.95"))
+
+# Default performance metrics
+DEFAULT_WIN_RATE = float(os.getenv("DASHBOARD_DEFAULT_WIN_RATE", "50.0"))
+DEFAULT_PROFIT_FACTOR = float(os.getenv("DASHBOARD_DEFAULT_PROFIT_FACTOR", "1.0"))
+DEFAULT_SHARPE_RATIO = float(os.getenv("DASHBOARD_DEFAULT_SHARPE_RATIO", "0.0"))
+DEFAULT_MAX_DRAWDOWN = float(os.getenv("DASHBOARD_DEFAULT_MAX_DRAWDOWN", "0.0"))
+
+# Default backtest data settings
+DEFAULT_BACKTEST_START_DATE = os.getenv("DASHBOARD_DEFAULT_BACKTEST_START_DATE", "2023-01-01")
+DEFAULT_BACKTEST_PERIODS = int(os.getenv("DASHBOARD_DEFAULT_BACKTEST_PERIODS", "100"))
+DEFAULT_BACKTEST_BASELINE_START = float(os.getenv("DASHBOARD_DEFAULT_BACKTEST_BASELINE_START", "100"))
+DEFAULT_BACKTEST_BASELINE_END = float(os.getenv("DASHBOARD_DEFAULT_BACKTEST_BASELINE_END", "130"))
+DEFAULT_BACKTEST_STRATEGY_START = float(os.getenv("DASHBOARD_DEFAULT_BACKTEST_STRATEGY_START", "100"))
+DEFAULT_BACKTEST_STRATEGY_END = float(os.getenv("DASHBOARD_DEFAULT_BACKTEST_STRATEGY_END", "150"))

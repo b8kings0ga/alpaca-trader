@@ -455,10 +455,12 @@ class Trader:
                 run_id = self.run_id or f"trader-{id(self)}"
                 logger.info(f"[Run ID: {run_id}] Processing buy signal for {symbol} (signal_changed: {signal_changed})")
                 
-                # Skip if the signal hasn't changed - this prevents duplicate orders
-                if not signal_changed:
-                    logger.info(f"[Run ID: {run_id}] Skipping buy signal for {symbol} because signal hasn't changed")
+                # Only skip unchanged buy signals if we already have a position in this symbol
+                if not signal_changed and symbol in current_positions:
+                    logger.info(f"[Run ID: {run_id}] Skipping buy signal for {symbol} because signal hasn't changed and we already have a position")
                     continue
+                elif not signal_changed:
+                    logger.info(f"[Run ID: {run_id}] Processing buy signal for {symbol} despite no change because we don't have a position yet")
                     
                 logger.info(f"[Run ID: {run_id}] Processing {action} signal for {symbol} (signal_changed: {signal_changed})")
                     

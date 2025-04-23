@@ -74,6 +74,8 @@ services:
     depends_on:
       - yfinance-db
     # Command is defined in the Dockerfile.optimized-bot
+    # Add the ignore-market-hours flag for backtesting/optimization
+    command: ["--ignore-market-hours"]
     restart: unless-stopped
 
   # Streamlit dashboard for visualizing trading data and performance

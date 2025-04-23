@@ -33,7 +33,7 @@ class MarketHoursBot:
     Bot that runs the optimized ensemble ML trading bot during market hours.
     """
     
-    def __init__(self, symbols, interval_minutes=15, pre_market_minutes=30, post_market_minutes=30):
+    def __init__(self, symbols, interval_minutes=15, pre_market_minutes=30, post_market_minutes=30, ignore_market_hours=False):
         """
         Initialize the MarketHoursBot.
         
@@ -47,6 +47,7 @@ class MarketHoursBot:
         self.interval_minutes = interval_minutes
         self.pre_market_minutes = pre_market_minutes
         self.post_market_minutes = post_market_minutes
+        self.ignore_market_hours = ignore_market_hours
         
         # Initialize Alpaca API
         self.api = tradeapi.REST(
@@ -63,6 +64,7 @@ class MarketHoursBot:
         logger.info(f"Interval: {interval_minutes} minutes")
         logger.info(f"Pre-market: {pre_market_minutes} minutes")
         logger.info(f"Post-market: {post_market_minutes} minutes")
+        logger.info(f"Ignore market hours: {ignore_market_hours}")
     
     def is_market_open(self):
         """
@@ -131,9 +133,14 @@ class MarketHoursBot:
             # Construct the command to run the bot
             cmd = [
                 "python", "run_optimized_bot.py",
-                "--symbols"] + self.symbols + [
+                "--symbols"
+            ] + self.symbols + [
                 "--interval", str(self.interval_minutes)
             ]
+            
+            # Add ignore_market_hours flag if specified
+            if self.ignore_market_hours:
+                cmd.append("--ignore-market-hours")
             
             # Start the bot process
             logger.info(f"Starting bot with command: {' '.join(cmd)}")
@@ -204,8 +211,10 @@ class MarketHoursBot:
         
         try:
             while True:
-                # Check if the market is open
-                if self.is_market_open():
+                # Check if the market is open or if we should ignore market hours
+                if self.is_market_open() or self.ignore_market_hours:
+                    if not self.is_market_open() and self.ignore_market_hours:
+                        logger.info("Market is closed, but starting bot anyway due to ignore_market_hours=True")
                     # Start the bot if it's not running
                     self.start_bot()
                 else:
@@ -235,6 +244,8 @@ def main():
                         help='Minutes before market open to start the bot')
     parser.add_argument('--post-market', type=int, default=30,
                         help='Minutes after market close to stop the bot')
+    parser.add_argument('--ignore-market-hours', action='store_true',
+                        help='Run the bot even when the market is closed (for backtesting/optimization)')
     
     args = parser.parse_args()
     
@@ -243,7 +254,8 @@ def main():
         symbols=args.symbols,
         interval_minutes=args.interval,
         pre_market_minutes=args.pre_market,
-        post_market_minutes=args.post_market
+        post_market_minutes=args.post_market,
+        ignore_market_hours=args.ignore_market_hours
     )
     
     bot.run()

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import pytz
 import requests
 from config import config
+from src.dashboard_config import *
 from src.bot import AlpacaBot
 from src.data import MarketData
 from src.strategies import get_strategy
@@ -83,13 +84,13 @@ class Dashboard:
         self.refresh_account_data()
         
         # Initialize strategy
-        self.current_strategy = 'moving_average_crossover'  # Default strategy
+        self.current_strategy = DEFAULT_STRATEGY
         self.strategy = get_strategy(self.current_strategy)
         
         # Automatically fetch data for default symbols on startup
         try:
             logger.info("Automatically fetching initial data for default symbols")
-            default_symbols = config.SYMBOLS[:3]  # Use first 3 symbols by default
+            default_symbols = config.SYMBOLS[:DEFAULT_SYMBOL_COUNT]
             if hasattr(self.strategy, 'fetch_data') and callable(getattr(self.strategy, 'fetch_data')):
                 self.data = self.strategy.fetch_data(default_symbols)
                 logger.info(f"Initial data fetched for {len(self.data)} symbols using YFinance")
@@ -539,23 +540,23 @@ class Dashboard:
         selected_symbols = st.sidebar.multiselect(
             "Select Symbols",
             config.SYMBOLS,
-            default=config.SYMBOLS[:3]
+            default=config.SYMBOLS[:DEFAULT_SYMBOL_COUNT]
         )
         
         # Timeframe selection
         timeframe = st.sidebar.selectbox(
             "Timeframe",
-            ["1D", "1H", "15Min"],
-            index=0
+            AVAILABLE_TIMEFRAMES,
+            index=DEFAULT_TIMEFRAME_INDEX
         )
         
         # Data period selection
         data_period = st.sidebar.slider(
             "Data Period (days)",
-            min_value=7,
-            max_value=100,
-            value=30,
-            step=1
+            min_value=DATA_PERIOD_MIN,
+            max_value=DATA_PERIOD_MAX,
+            value=DATA_PERIOD_DEFAULT,
+            step=DATA_PERIOD_STEP
         )
         
         # Fetch data button
@@ -1075,19 +1076,19 @@ class Dashboard:
             
         if strategy_type == 'MovingAverageCrossover' or strategy_type == 'DualMovingAverageYF':
             col1, col2 = st.columns(2)
-            col1.number_input("Short Window", min_value=5, max_value=50, value=config.SHORT_WINDOW, key="short_window")
-            col2.number_input("Long Window", min_value=20, max_value=200, value=config.LONG_WINDOW, key="long_window")
+            col1.number_input("Short Window", min_value=MA_SHORT_WINDOW_MIN, max_value=MA_SHORT_WINDOW_MAX, value=config.SHORT_WINDOW, key="short_window")
+            col2.number_input("Long Window", min_value=MA_LONG_WINDOW_MIN, max_value=MA_LONG_WINDOW_MAX, value=config.LONG_WINDOW, key="long_window")
             
         elif strategy_type == 'RSIStrategy':
             col1, col2, col3 = st.columns(3)
-            col1.number_input("RSI Period", min_value=5, max_value=30, value=config.RSI_PERIOD, key="rsi_period")
-            col2.number_input("Oversold Threshold", min_value=10, max_value=40, value=config.RSI_OVERSOLD, key="rsi_oversold")
-            col3.number_input("Overbought Threshold", min_value=60, max_value=90, value=config.RSI_OVERBOUGHT, key="rsi_overbought")
+            col1.number_input("RSI Period", min_value=RSI_PERIOD_MIN, max_value=RSI_PERIOD_MAX, value=config.RSI_PERIOD, key="rsi_period")
+            col2.number_input("Oversold Threshold", min_value=RSI_OVERSOLD_MIN, max_value=RSI_OVERSOLD_MAX, value=config.RSI_OVERSOLD, key="rsi_oversold")
+            col3.number_input("Overbought Threshold", min_value=RSI_OVERBOUGHT_MIN, max_value=RSI_OVERBOUGHT_MAX, value=config.RSI_OVERBOUGHT, key="rsi_overbought")
             
         elif strategy_type == 'MLStrategy':
             col1, col2 = st.columns(2)
             col1.selectbox("Model Type", ["ensemble", "neural_network", "reinforcement", "nlp"], index=0, key="ml_model_type")
-            col2.number_input("Confidence Threshold", min_value=0.5, max_value=0.95, value=config.ML_CONFIDENCE_THRESHOLD, key="ml_confidence")
+            col2.number_input("Confidence Threshold", min_value=ML_CONFIDENCE_MIN, max_value=ML_CONFIDENCE_MAX, value=config.ML_CONFIDENCE_THRESHOLD, key="ml_confidence")
             
         # Note: In a real implementation, you would save these parameters and apply them to the strategy
         
@@ -1109,10 +1110,10 @@ class Dashboard:
         
         # Default metrics in case of insufficient data
         default_metrics = {
-            'win_rate': 50.0,
-            'profit_factor': 1.0,
-            'sharpe_ratio': 0.0,
-            'max_drawdown': 0.0
+            'win_rate': DEFAULT_WIN_RATE,
+            'profit_factor': DEFAULT_PROFIT_FACTOR,
+            'sharpe_ratio': DEFAULT_SHARPE_RATIO,
+            'max_drawdown': DEFAULT_MAX_DRAWDOWN
         }
         
         # Check if we have enough data
@@ -1254,9 +1255,9 @@ class Dashboard:
         
         # Default backtest data in case of insufficient data
         logger.info(f"Preparing default backtest data in case needed")
-        default_dates = pd.date_range(start='2023-01-01', periods=100, freq='D')
-        default_baseline = np.linspace(100, 130, 100) + np.random.normal(0, 3, 100).cumsum()
-        default_strategy = np.linspace(100, 150, 100) + np.random.normal(0, 4, 100).cumsum()
+        default_dates = pd.date_range(start=DEFAULT_BACKTEST_START_DATE, periods=DEFAULT_BACKTEST_PERIODS, freq='D')
+        default_baseline = np.linspace(DEFAULT_BACKTEST_BASELINE_START, DEFAULT_BACKTEST_BASELINE_END, DEFAULT_BACKTEST_PERIODS) + np.random.normal(0, 3, DEFAULT_BACKTEST_PERIODS).cumsum()
+        default_strategy = np.linspace(DEFAULT_BACKTEST_STRATEGY_START, DEFAULT_BACKTEST_STRATEGY_END, DEFAULT_BACKTEST_PERIODS) + np.random.normal(0, 4, DEFAULT_BACKTEST_PERIODS).cumsum()
         
         default_df = pd.DataFrame({
             'date': default_dates,
