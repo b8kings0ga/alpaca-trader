@@ -11,9 +11,24 @@ WORKDIR /app
 # Install all system dependencies in a single layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cron \
+    gcc \
+    g++ \
+    make \
+    wget \
+    build-essential \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /app/logs /app/models
+
+# Download and install TA-Lib
+RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
+    tar -xzf ta-lib-0.4.0-src.tar.gz && \
+    cd ta-lib/ && \
+    ./configure --prefix=/usr && \
+    make && \
+    make install && \
+    cd .. && \
+    rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
 # Copy requirements first for better caching
 COPY requirements.txt .
